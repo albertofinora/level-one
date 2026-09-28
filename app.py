@@ -308,9 +308,12 @@ SEZIONI = ["Classifica", "Membri", "Generi", "Hype", "Affinità", "Proponenti", 
 def stats_tab(full_data, me: str):
     section = st.segmented_control("Sezione", SEZIONI, default="Classifica", label_visibility="collapsed") or "Classifica"
     n_hidden = L.hidden_with_ratings(full_data)
-    if n_hidden:
+    include_hidden = False
+    if n_hidden and st.session_state.get("admin_ok"):
+        include_hidden = st.toggle("Includi i voti nascosti (lo vedi solo tu, come admin)")
+    if n_hidden and not include_hidden:
         st.caption(f"🔒 I voti di {n_hidden} periodo{'' if n_hidden == 1 else 'i'} non sono ancora stati rivelati e non sono inclusi.")
-    data = L.visible_data(full_data)
+    data = full_data if include_hidden else L.visible_data(full_data)
     if L.ratings(data).empty and section not in ("Desiderati", "Proponenti"):
         empty_ratings_note()
         return
@@ -653,6 +656,13 @@ def admin_periods(data):
                 st.dataframe(counts[["gioco", "voti", "percentuale"]], hide_index=True, column_config={
                     "gioco": "Opzione", "voti": "Voti",
                     "percentuale": st.column_config.NumberColumn("% votanti", format="%.0f%%")})
+                if not votes.empty:
+                    with st.expander("Chi ha votato cosa (solo admin)"):
+                        who = pd.DataFrame({
+                            "Membro": votes["member_id"].map(nm),
+                            "Scelte": votes["scelte"].map(lambda x: ", ".join(gm.get(g, g) for g in L.split_list(x)) or "(nessuna)"),
+                        })
+                        st.dataframe(who.sort_values("Membro"), hide_index=True)
 
             if stato == "votazione":
                 top = L.leaders(counts)
@@ -682,6 +692,7 @@ def admin_periods(data):
                         st.rerun()
 
             if stato in ("in_gioco", "chiuso"):
+                admin_ratings_table(data, per)
                 if L.is_revealed(per):
                     st.success("Voti rivelati: tutti vedono valutazioni e statistiche di questo periodo.")
                 else:
@@ -701,6 +712,30 @@ def admin_periods(data):
                 if L.is_revealed(per) and st.button("Nascondi di nuovo i voti", key=f"hide_{pid}"):
                     if update_period(data, pid, rivelato=""):
                         st.rerun()
+
+
+def admin_ratings_table(data, per):
+    """Tutte le valutazioni del periodo, membro per membro. Visibile solo all'admin."""
+    pid = per["period_id"]
+    nm = L.name_map(data)
+    rows = L.latest(data["valutazioni"], ["period_id", "member_id"])
+    rows = rows[rows["period_id"] == pid]
+    if rows.empty:
+        return
+    hype = L.hype_table(data)
+    hype = hype[hype["period_id"] == pid].set_index("member_id")["voto"]
+    tab = pd.DataFrame({"Membro": rows["member_id"].map(nm).values, "Stato": rows["stato"].values,
+                        "Hype": rows["member_id"].map(hype).astype(float).values})
+    for c in ["final"] + L.CATEGORIE + ["ore"]:
+        tab[L.ETICHETTE[c]] = rows[c].map(L.to_num).astype(float).values
+    tab["Commento"] = rows["commento"].values
+    label = f"Valutazioni di ogni membro ({len(tab)})"
+    if not L.is_revealed(per):
+        label += " · solo admin"
+    with st.expander(label):
+        numeric = ["Hype", "FINAL"] + [L.ETICHETTE[c] for c in L.CATEGORIE]
+        st.dataframe(tab.sort_values("FINAL", ascending=False), hide_index=True,
+                     column_config={**num_cols(numeric), "Ore": st.column_config.NumberColumn(format="%.0f")})
 
 
 def admin_games(data):
