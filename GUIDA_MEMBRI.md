@@ -16,6 +16,7 @@ Se usi un telefono o un computer che non è tuo, premi **Esci** quando hai finit
 2. **La votazione.** Nella scheda **Proposte** spunta *tutti* i giochi che ti andrebbe di giocare, anche solo uno o anche tutti. Puoi cambiare le tue scelte finché la votazione è aperta. I risultati si vedono solo quando l'admin la chiude, così nessuno si fa influenzare.
 3. **L'hype.** Appena il gioco è scelto, nella scheda **In gioco** dai un voto da 1 a 10 a quanto ti ispira *prima di iniziare*. Il voto si blocca quando salvi la valutazione finale.
 4. **La valutazione.** Quando hai finito il gioco, o quando lo molli, compila la valutazione nella scheda **In gioco**. Puoi modificarla finché l'admin non chiude il periodo.
+5. **La serata.** Fino alla serata in cui ne parliamo tutti insieme, ognuno vede solo i propri voti: gli altri restano nascosti 🔒, anche nelle statistiche. Alla serata l'admin li rivela e compaiono nello **Storico** e nelle **Statistiche**.
 
 Accanto ai giochi proposti può comparire un punto interrogativo: toccalo per vedere quanto *potresti* votarli, stimato in base ai voti che hai dato a giochi dello stesso genere.
 
@@ -49,4 +50,6 @@ E poi **come è andata**:
 
 ## Chi vede cosa
 
-Nello **Storico** tutti vedono i FINAL, le ore e i commenti di ciascuno, insieme a quanti voti ha preso ogni proposta. Chi ha votato quale proposta non compare nell'app, ma l'admin può vederlo nel foglio dei dati.
+Prima della serata vedi solo i tuoi voti, e quanti membri hanno già valutato (non cosa). Dopo la serata, nello **Storico** tutti vedono i FINAL, le ore e i commenti di ciascuno.
+
+Delle proposte si vede solo quanti voti ha preso ogni gioco, non chi ha votato cosa. L'admin, che gestisce il foglio dei dati, può però vedere tutto.

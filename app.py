@@ -19,6 +19,12 @@ import seed
 from storage import SCHEMA, LocalStore, SheetsStore, new_id, now_ts
 
 st.set_page_config(page_title="Level One", page_icon="🎮", layout="centered")
+st.markdown(
+    """<style>
+    [data-testid="stMainBlockContainer"] {padding-top: 2.5rem; padding-bottom: 3rem;}
+    </style>""",
+    unsafe_allow_html=True,
+)
 
 HERE = Path(__file__).parent
 SCALA = ["–"] + [f"{x / 2:g}" for x in range(2, 21)]  # –, 1, 1.5, … 10
@@ -78,6 +84,11 @@ def fmt(x, dec: int = 1) -> str:
     if x is None or (isinstance(x, float) and np.isnan(x)):
         return "–"
     return f"{x:.{dec}f}".replace(".", ",")
+
+
+def fmt_date(iso: str) -> str:
+    parts = str(iso).split("-")
+    return "/".join(reversed(parts)) if len(parts) == 3 else str(iso)
 
 
 def num_cols(cols, dec: int = 1) -> dict:
@@ -218,6 +229,9 @@ def playing_tab(data, me: str):
         st.caption(f"Periodo {per['numero']} · proposto da {nm.get(per['proponente_id'], '?')}")
 
         rated = L.my_rating(data, pid, me)
+        n_rated = len(L.latest(data["valutazioni"], ["period_id", "member_id"]).query("period_id == @pid"))
+        n_active = int(L.members(data)["attivo"].sum())
+        st.caption(f"Hanno valutato {n_rated} su {n_active}. I voti di tutti si vedranno alla serata, quando l'admin li rivela.")
         hype_section(data, pid, me, locked_by_rating=rated is not None)
         st.divider()
         rating_section(data, per, me, rated)
@@ -291,8 +305,12 @@ def rating_section(data, per, me: str, prev):
 SEZIONI = ["Classifica", "Membri", "Generi", "Hype", "Affinità", "Proponenti", "Desiderati"]
 
 
-def stats_tab(data, me: str):
+def stats_tab(full_data, me: str):
     section = st.segmented_control("Sezione", SEZIONI, default="Classifica", label_visibility="collapsed") or "Classifica"
+    n_hidden = L.hidden_with_ratings(full_data)
+    if n_hidden:
+        st.caption(f"🔒 I voti di {n_hidden} periodo{'' if n_hidden == 1 else 'i'} non sono ancora stati rivelati e non sono inclusi.")
+    data = L.visible_data(full_data)
     if L.ratings(data).empty and section not in ("Desiderati", "Proponenti"):
         empty_ratings_note()
         return
@@ -312,13 +330,25 @@ def stats_ranking(data, me):
     order = st.radio("Ordina per", ["FINAL medio", "Più divisivi", "Gradimento normalizzato"], horizontal=True)
     key = {"FINAL medio": "final_medio", "Più divisivi": "divisivita", "Gradimento normalizzato": "gradimento_normalizzato"}[order]
     gs = gs.sort_values(key, ascending=False)
+    x_scale = alt.Scale(domain=[0, 10]) if key == "final_medio" else alt.Undefined
     chart = alt.Chart(gs).mark_bar().encode(
-        x=alt.X(f"{key}:Q", title=order),
+        x=alt.X(f"{key}:Q", title=order, scale=x_scale),
         y=alt.Y("gioco:N", sort="-x", title=None),
         tooltip=["gioco", alt.Tooltip(f"{key}:Q", format=".1f"), "valutazioni"],
     )
     st.altair_chart(chart, width="stretch")
     st.dataframe(
+        gs[["gioco", "final_medio", "divisivita", "valutazioni"]],
+        hide_index=True,
+        column_config={
+            "gioco": "Gioco",
+            "final_medio": st.column_config.NumberColumn("FINAL", format="%.1f"),
+            "divisivita": st.column_config.NumberColumn("Divis.", format="%.1f", help="Deviazione standard dei FINAL: più è alta, più il gruppo è spaccato."),
+            "valutazioni": "Voti",
+        },
+    )
+    with st.expander("Tutti i dettagli"):
+        st.dataframe(
         gs[["gioco", "final_medio", "media_categorie", "divisivita", "gradimento_normalizzato", "valutazioni", "abbandoni", "ore_medie"]],
         hide_index=True,
         column_config={
@@ -331,7 +361,7 @@ def stats_ranking(data, me):
             "abbandoni": "Abbandoni",
             "ore_medie": st.column_config.NumberColumn("Ore medie", format="%.0f"),
         },
-    )
+        )
     with st.expander("Medie per categoria"):
         cat = gs[["gioco"] + L.CATEGORIE].rename(columns=L.ETICHETTE)
         st.dataframe(cat, hide_index=True, column_config=num_cols(cat.columns[1:]))
@@ -352,23 +382,37 @@ def stats_members(data, me):
     r = L.ratings(data)
     group = r[L.CATEGORIE + ["final"]].mean()
     mine = r.loc[r["member_id"] == who, L.CATEGORIE + ["final"]].mean()
+    order = [L.ETICHETTE[c] for c in L.CATEGORIE + ["final"]]
     comp = pd.DataFrame(
-        {"categoria": [L.ETICHETTE[c] for c in group.index] * 2,
-         "chi": [nm.get(who)] * len(group) + ["Gruppo"] * len(group),
+        {"categoria": order * 2,
+         "tipo": [nm.get(who)] * len(order) + ["Gruppo"] * len(order),
          "voto": list(mine.values) + list(group.values)}
-    )
-    chart = alt.Chart(comp).mark_bar().encode(
-        x=alt.X("voto:Q", scale=alt.Scale(domain=[0, 10]), title=None),
-        y=alt.Y("chi:N", title=None),
-        row=alt.Row("categoria:N", title=None, sort=[L.ETICHETTE[c] for c in L.CATEGORIE + ["final"]]),
-        color=alt.Color("chi:N", legend=None),
-        tooltip=["chi", "categoria", alt.Tooltip("voto:Q", format=".1f")],
-    ).properties(height=40)
-    st.altair_chart(chart)
+    ).dropna()
+    st.altair_chart(dumbbell(comp, "categoria", ["Gruppo", nm.get(who)], y_sort=order), width="stretch",
+                    height=dumbbell_height(comp, "categoria"))
+
+
+def dumbbell(df, y: str, order: list[str], y_sort=None):
+    """Due punti per riga (es. hype e FINAL) uniti da una linea: leggibile anche su schermi stretti."""
+    colors = alt.Scale(domain=order, range=["#9DB0FF", "#3D5AFE"])
+    base = alt.Chart(df).encode(y=alt.Y(f"{y}:N", title=None, sort=y_sort, axis=alt.Axis(labelLimit=150, labelOverlap=False)))
+    rule = base.mark_rule(color="#9AA3C0", strokeWidth=2).encode(
+        x=alt.X("min(voto):Q", scale=alt.Scale(domain=[0, 10]), title=None), x2="max(voto):Q")
+    pts = base.mark_circle(size=140, opacity=1).encode(
+        x="voto:Q", color=alt.Color("tipo:N", scale=colors, legend=alt.Legend(title=None, orient="top")),
+        tooltip=[y, "tipo", alt.Tooltip("voto:Q", format=".1f")])
+    return rule + pts
+
+
+def dumbbell_height(df, y: str) -> int:
+    return max(140, 44 * df[y].nunique() + 60)
 
 
 def heatmap(df, x, y, value, domain=(1, 10), fmt_str=".1f"):
-    base = alt.Chart(df).encode(x=alt.X(f"{x}:N", title=None, axis=alt.Axis(labelAngle=-45)), y=alt.Y(f"{y}:N", title=None))
+    base = alt.Chart(df).encode(
+        x=alt.X(f"{x}:N", title=None, axis=alt.Axis(labelAngle=-60, labelOverlap=False, labelFontSize=10)),
+        y=alt.Y(f"{y}:N", title=None, axis=alt.Axis(labelOverlap=False)),
+    )
     rect = base.mark_rect().encode(
         color=alt.Color(f"{value}:Q", scale=alt.Scale(domain=list(domain), scheme="blues"), legend=None),
         tooltip=[x, y, alt.Tooltip(f"{value}:Q", format=fmt_str)],
@@ -398,24 +442,17 @@ def stats_hype(data, me):
     st.markdown("**Aspettativa contro voto finale, per gioco**")
     long = per_game.melt(id_vars=["gioco"], value_vars=["hype_medio", "final_medio"], var_name="tipo", value_name="voto")
     long["tipo"] = long["tipo"].map({"hype_medio": "Hype", "final_medio": "FINAL"})
-    chart = alt.Chart(long).mark_bar().encode(
-        x=alt.X("voto:Q", scale=alt.Scale(domain=[0, 10]), title=None),
-        y=alt.Y("tipo:N", title=None),
-        row=alt.Row("gioco:N", title=None),
-        color=alt.Color("tipo:N", legend=alt.Legend(title=None, orient="top")),
-        tooltip=["gioco", "tipo", alt.Tooltip("voto:Q", format=".1f")],
-    ).properties(height=40)
-    st.altair_chart(chart)
+    st.altair_chart(dumbbell(long, "gioco", ["Hype", "FINAL"]), width="stretch", height=dumbbell_height(long, "gioco"))
 
     st.markdown("**Chi si esalta e chi si sottovaluta**")
     st.caption("Differenza media tra FINAL e hype: positiva = i giochi ti piacciono più del previsto.")
     chart = alt.Chart(per_member).mark_bar().encode(
         x=alt.X("delta:Q", title="FINAL − hype"),
-        y=alt.Y("membro:N", sort="-x", title=None),
+        y=alt.Y("membro:N", sort="-x", title=None, axis=alt.Axis(labelOverlap=False)),
         color=alt.condition("datum.delta >= 0", alt.value("#3D5AFE"), alt.value("#E8833A")),
         tooltip=["membro", alt.Tooltip("delta:Q", format="+.1f"), "n"],
     )
-    st.altair_chart(chart, width="stretch")
+    st.altair_chart(chart, width="stretch", height=max(140, 30 * len(per_member) + 50))
 
 
 def stats_affinity(data, me):
@@ -429,9 +466,12 @@ def stats_affinity(data, me):
     if not mine.empty:
         best = mine.sort_values("affinita", ascending=False).iloc[0]
         twin = best["membro_b"] if best["membro_a"] == my_name else best["membro_a"]
-        st.metric("Il tuo gemello di gusto", twin, f"{fmt(best['affinita'], 0)}% su {best['giochi_in_comune']} giochi", delta_color="off")
+        st.metric("Il tuo gemello di gusto", twin, f"{fmt(best['affinita'], 0)}% su {best['giochi_in_comune']} giochi",
+                  delta_color="off", delta_arrow="off")
     sym = pd.concat([aff, aff.rename(columns={"membro_a": "membro_b", "membro_b": "membro_a"})])
-    st.altair_chart(heatmap(sym, "membro_a", "membro_b", "affinita", domain=(0, 100), fmt_str=".0f"), width="stretch")
+    low = max(0, int(sym["affinita"].min() // 5 * 5) - 5)
+    st.caption(f"Colori da {low}% (chiaro) a 100% (scuro).")
+    st.altair_chart(heatmap(sym, "membro_a", "membro_b", "affinita", domain=(low, 100), fmt_str=".0f"), width="stretch")
 
 
 def stats_proposers(data, me):
@@ -465,20 +505,26 @@ def history_tab(data, me):
         st.info("Lo storico si riempie man mano che i periodi vengono votati.")
         return
     gm, nm = L.game_map(data), L.name_map(data)
-    r = L.ratings(data)
+    r = L.ratings(L.visible_data(data))
     for _, per in p.iterrows():
         winner = gm.get(per["vincitore_id"], "da decidere")
         pr = r[r["period_id"] == per["period_id"]]
+        revealed = L.is_revealed(per)
         avg = fmt(pr["final"].mean()) if not pr.empty else "–"
-        title = f"#{per['numero']} · {winner} · FINAL {avg}"
+        if per["stato"] == "votazione":
+            title = f"#{per['numero']} · votazione in corso"
+        else:
+            title = f"#{per['numero']} · {winner} · " + (f"FINAL {avg}" if revealed else "🔒 voti nascosti")
         with st.expander(title):
             st.caption(f"{L.ETICHETTE_STATO.get(per['stato'], per['stato'])} · proposto da {nm.get(per['proponente_id'], '?')}"
-                       + (f" · {per['data']}" if per["data"] else ""))
+                       + (f" · {fmt_date(per['data'])}" if per["data"] else ""))
             if per["stato"] == "votazione":
                 st.write("Votazione in corso: i risultati si vedono alla chiusura.")
             else:
                 counts = L.vote_counts(data, per)
                 st.dataframe(counts[["gioco", "voti"]], hide_index=True, column_config={"gioco": "Opzione", "voti": "Voti"})
+            if per["stato"] in ("in_gioco", "chiuso") and not revealed:
+                st.write("🔒 Le valutazioni verranno rivelate dall'admin alla serata.")
             if not pr.empty:
                 show = pr[["membro", "stato", "final", "ore", "commento"]].sort_values("final", ascending=False)
                 st.dataframe(show, hide_index=True, column_config={
@@ -566,7 +612,7 @@ def admin_periods(data):
                     nums = L.periods(data)["numero_n"]
                     numero = int(nums.max()) + 1 if nums.notna().any() else 1
                     row = {"period_id": new_id(), "numero": str(numero), "proponente_id": prop, "data": when.isoformat(),
-                           "stato": start, "opzioni": L.join_list(opts), "vincitore_id": ""}
+                           "stato": start, "opzioni": L.join_list(opts), "vincitore_id": "", "rivelato": ""}
                     if save_table("periodi", pd.concat([data["periodi"], pd.DataFrame([row])], ignore_index=True)):
                         st.toast(f"Periodo {numero} creato")
                         st.rerun()
@@ -635,12 +681,25 @@ def admin_periods(data):
                     if update_period(data, pid, stato="chiuso"):
                         st.rerun()
 
+            if stato in ("in_gioco", "chiuso"):
+                if L.is_revealed(per):
+                    st.success("Voti rivelati: tutti vedono valutazioni e statistiche di questo periodo.")
+                else:
+                    st.info("🔒 Voti nascosti: i membri vedono solo i propri.")
+                    if st.button("Rivela i voti a tutti", key=f"reveal_{pid}", type="primary"):
+                        if update_period(data, pid, rivelato="1"):
+                            st.toast("Voti rivelati")
+                            st.rerun()
+
             with st.popover("Correzioni"):
                 st.caption("Per sistemare errori. Cambiare stato non cancella voti né valutazioni.")
                 new_state = st.selectbox("Stato", L.STATI_PERIODO, index=L.STATI_PERIODO.index(stato) if stato in L.STATI_PERIODO else 0,
                                          format_func=L.ETICHETTE_STATO.get, key=f"force_{pid}")
                 if st.button("Applica", key=f"apply_{pid}"):
                     if update_period(data, pid, stato=new_state):
+                        st.rerun()
+                if L.is_revealed(per) and st.button("Nascondi di nuovo i voti", key=f"hide_{pid}"):
+                    if update_period(data, pid, rivelato=""):
                         st.rerun()
 
 
@@ -777,12 +836,7 @@ def main():
         login_view(data)
         return
 
-    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
-    c1.title("🎮 Level One")
-    if c2.button("Esci", width="stretch"):
-        st.session_state.pop("member_id", None)
-        st.session_state["admin_ok"] = False
-        st.rerun()
+    st.markdown("## 🎮 Level One")
     st.caption(f"Ciao {nm[me]}!")
 
     tabs = st.tabs(["🗳️ Proposte", "🎮 In gioco", "📊 Statistiche", "📜 Storico", "📖 Guida", "🔧 Admin"])
@@ -798,6 +852,12 @@ def main():
         show_guide()
     with tabs[5]:
         admin_gate(data)
+
+    st.divider()
+    if st.button(f"Esci ({nm[me]})", type="tertiary"):
+        st.session_state.pop("member_id", None)
+        st.session_state["admin_ok"] = False
+        st.rerun()
 
 
 main()

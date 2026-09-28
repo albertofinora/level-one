@@ -124,6 +124,30 @@ def period_row(data, period_id: str) -> pd.Series | None:
     return None if rows.empty else rows.iloc[0]
 
 
+def is_revealed(period) -> bool:
+    return is_true(period.get("rivelato", ""))
+
+
+def hidden_period_ids(data) -> set[str]:
+    p = data["periodi"]
+    return set(p.loc[~p["rivelato"].map(is_true), "period_id"])
+
+
+def visible_data(data) -> dict:
+    """I dati come li vedono i membri: senza valutazioni e hype dei periodi non ancora rivelati."""
+    hidden = hidden_period_ids(data)
+    out = dict(data)
+    for table in ("valutazioni", "hype"):
+        out[table] = data[table][~data[table]["period_id"].isin(hidden)].reset_index(drop=True)
+    return out
+
+
+def hidden_with_ratings(data) -> int:
+    """Quanti periodi hanno valutazioni ancora nascoste."""
+    hidden = hidden_period_ids(data)
+    return len(set(data["valutazioni"]["period_id"]) & hidden)
+
+
 # ---------------------------------------------------------------- votazione proposte
 
 def eligible_voters(data, period) -> list[str]:

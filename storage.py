@@ -22,7 +22,7 @@ import pandas as pd
 SCHEMA: dict[str, list[str]] = {
     "membri": ["member_id", "nome", "attivo"],
     "giochi": ["game_id", "titolo", "tag", "anno", "piattaforme"],
-    "periodi": ["period_id", "numero", "proponente_id", "data", "stato", "opzioni", "vincitore_id"],
+    "periodi": ["period_id", "numero", "proponente_id", "data", "stato", "opzioni", "vincitore_id", "rivelato"],
     "pin": ["member_id", "pin_hash", "ts"],
     "voti_proposte": ["period_id", "member_id", "scelte", "ts"],
     "hype": ["period_id", "member_id", "voto", "ts"],

@@ -50,11 +50,11 @@ def build() -> dict[str, pd.DataFrame]:
             {
                 "period_id": new_id(), "numero": "1", "proponente_id": member_ids["Ventu"],
                 "data": "2026-06-16", "stato": "in_gioco", "opzioni": join_list(p1),
-                "vincitore_id": game_ids["Hellblade: Senua's Sacrifice"],
+                "vincitore_id": game_ids["Hellblade: Senua's Sacrifice"], "rivelato": "",
             },
             {
                 "period_id": new_id(), "numero": "2", "proponente_id": member_ids["Bubu"],
-                "data": "", "stato": "bozza", "opzioni": join_list(p2), "vincitore_id": "",
+                "data": "", "stato": "bozza", "opzioni": join_list(p2), "vincitore_id": "", "rivelato": "",
             },
         ]
     )
