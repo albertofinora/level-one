@@ -288,7 +288,7 @@ def rating_section(data, per, me: str, prev):
         scores["final"] = st.select_slider("FINAL: il tuo voto complessivo, di pancia", options=SCALA,
                                            value=prev_val("final"), key=f"{pid}_final")
         commento = st.text_input("Commento (facoltativo)", value=prev["commento"] if prev is not None else "",
-                                 max_chars=200)
+                                 max_chars=500)
         ok = st.form_submit_button("Salva valutazione", type="primary", width="stretch")
 
     if not ok:
