@@ -448,3 +448,31 @@ def games_catalog(data) -> pd.DataFrame:
     shown = p[p["stato"] != "bozza"]["opzioni"].map(split_list)
     g["proposto"] = g["game_id"].map(lambda gid: int(sum(gid in opts for opts in shown)))
     return g
+
+
+def tag_counts(data, column: str) -> dict[str, int]:
+    """Quanti giochi usano ciascun tag. column: 'tag' (generi) o 'piattaforme'."""
+    splitter = split_list if column == "tag" else split_multi
+    counts: dict[str, int] = {}
+    for value in data["giochi"][column]:
+        for t in splitter(value):
+            counts[t] = counts.get(t, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: kv[0].lower()))
+
+
+def replace_tag(giochi: pd.DataFrame, column: str, old: str, new: str | None) -> pd.DataFrame:
+    """Rinomina (o unisce, se `new` esiste già) oppure elimina (`new` = None) un tag in tutti i giochi."""
+    splitter = split_list if column == "tag" else split_multi
+    new = (new or "").strip() or None
+
+    def fix(value):
+        out = []
+        for t in splitter(value):
+            t = new if t == old else t
+            if t and t not in out:
+                out.append(t)
+        return join_list(out)
+
+    df = giochi.copy()
+    df[column] = df[column].map(fix)
+    return df

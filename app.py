@@ -656,9 +656,10 @@ def admin_gate(data):
 def admin_panel(data):
     if isinstance(get_store(), LocalStore):
         st.warning("Modalità locale: i dati sono salvati in file CSV su questo computer, non nel foglio Google.")
-    section = st.segmented_control("Gestione", ["Periodi", "Giochi", "Membri", "Dati"], default="Periodi",
+    section = st.segmented_control("Gestione", ["Periodi", "Giochi", "Tag", "Membri", "Dati"], default="Periodi",
                                    key="admin_section") or "Periodi"
-    {"Periodi": admin_periods, "Giochi": admin_games, "Membri": admin_members, "Dati": admin_data}[section](data)
+    {"Periodi": admin_periods, "Giochi": admin_games, "Tag": admin_tags, "Membri": admin_members,
+     "Dati": admin_data}[section](data)
 
 
 def update_period(data, period_id: str, **changes) -> bool:
@@ -868,12 +869,6 @@ def fill_from_hltb(prefix: str):
     if genres:
         current = st.session_state.get(_gkey(prefix, "tag")) or []
         st.session_state[_gkey(prefix, "tag")] = current + [g for g in genres if g not in current]
-        msg = ("ok", "Generi trovati: " + ", ".join(genres) + ". Controllali prima di salvare.")
-    elif genres is None:
-        msg = ("warn", "Durate e piattaforme sono a posto, ma non sono riuscito a leggere i generi dalla pagina del gioco: aggiungili a mano.")
-    else:
-        msg = ("warn", "La pagina del gioco non riporta generi leggibili: aggiungili a mano.")
-    st.session_state[_gkey(prefix, "gmsg")] = msg
 
 
 def hltb_search_block(prefix: str):
@@ -898,9 +893,6 @@ def hltb_search_block(prefix: str):
         st.radio("Risultati", range(len(results)), format_func=lambda i: hltb.label(results[i]),
                  key=_gkey(prefix, "pick"), index=0)
         st.button("Usa questo risultato", key=_gkey(prefix, "use"), on_click=fill_from_hltb, args=(prefix,))
-    msg = st.session_state.get(_gkey(prefix, "gmsg"))
-    if msg:
-        (st.success if msg[0] == "ok" else st.warning)(msg[1])
 
 
 def game_form(data, prefix: str, submit_label: str):
@@ -982,6 +974,45 @@ def admin_games(data):
     res = filter_games(cat, "adm")
     st.caption(f"{len(res)} giochi su {len(cat)}. Qui il FINAL include anche i voti non ancora rivelati.")
     games_table(res)
+
+
+def admin_tags(data):
+    kind = st.segmented_control("Tipo di tag", ["Generi", "Piattaforme"], default="Generi", key="tag_kind") or "Generi"
+    column = "tag" if kind == "Generi" else "piattaforme"
+    counts = L.tag_counts(data, column)
+    if not counts:
+        st.info(f"Nessun tag di tipo {kind.lower()} nel database.")
+        return
+    st.dataframe(pd.DataFrame({"Tag": list(counts), "Giochi": list(counts.values())}), hide_index=True)
+
+    tag = st.selectbox("Tag da modificare", list(counts), index=None, placeholder="Scegli un tag",
+                       format_func=lambda t: f"{t} ({counts[t]} gioc{'o' if counts[t] == 1 else 'hi'})", key=f"tag_sel_{kind}")
+    if not tag:
+        return
+    games = data["giochi"]
+    splitter = L.split_list if column == "tag" else L.split_multi
+    used_by = games.loc[games[column].map(lambda v: tag in splitter(v)), "titolo"].tolist()
+    st.caption("Usato da: " + ", ".join(used_by))
+
+    new_name = st.text_input("Nuovo nome", value=tag, key=f"tag_new_{kind}_{tag}",
+                             help="Se scrivi il nome di un tag che esiste già, i due tag vengono uniti.")
+    c1, c2 = st.columns(2)
+    if c1.button("Rinomina", key=f"tag_ren_{kind}_{tag}", width="stretch"):
+        target = new_name.strip()
+        if not target:
+            st.error("Scrivi il nuovo nome.")
+        elif target == tag:
+            st.info("Il nome non è cambiato.")
+        elif save_table("giochi", L.replace_tag(games, column, tag, target)):
+            merged = " (uniti)" if target in counts else ""
+            st.toast(f"“{tag}” → “{target}”{merged}")
+            st.rerun()
+    with c2.popover("Elimina", width="stretch"):
+        st.write(f"Tolgo “{tag}” da {len(used_by)} gioc{'o' if len(used_by) == 1 else 'hi'}. I giochi restano, perdono solo questo tag.")
+        if st.button("Sì, elimina il tag", key=f"tag_del_{kind}_{tag}", type="primary"):
+            if save_table("giochi", L.replace_tag(games, column, tag, None)):
+                st.toast(f"Tag “{tag}” eliminato")
+                st.rerun()
 
 
 def admin_members(data):
