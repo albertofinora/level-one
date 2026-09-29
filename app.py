@@ -818,17 +818,23 @@ def _gkey(prefix: str, field: str) -> str:
 
 
 def init_game_fields(prefix: str, row=None):
-    """Prepara i valori del modulo gioco nello stato della sessione (una sola volta)."""
-    if st.session_state.get(_gkey(prefix, "_init")):
+    """Prepara i valori del modulo gioco nello stato della sessione.
+
+    Streamlit cancella le chiavi dei widget che non vengono mostrati (per esempio quando
+    si passa a un'altra sezione dell'area admin). Se manca il titolo, il modulo è stato
+    "dimenticato": lo reimpostiamo tutto, compresi i dati HLTB non legati a un widget.
+    """
+    if _gkey(prefix, "titolo") in st.session_state:
         return
     get = (lambda c: str(row[c]) if row is not None and c in row else "")
+    for k in [k for k in st.session_state if str(k).startswith(prefix + "_")]:
+        del st.session_state[k]
     st.session_state[_gkey(prefix, "titolo")] = get("titolo")
     st.session_state[_gkey(prefix, "tag")] = L.split_list(get("tag"))
     st.session_state[_gkey(prefix, "anno")] = get("anno")
     st.session_state[_gkey(prefix, "piatt")] = L.split_multi(get("piattaforme"))
     for c in ["ore_storia", "ore_extra", "ore_completo", "hltb_url", "hltb_id"]:
         st.session_state[_gkey(prefix, c)] = get(c)
-    st.session_state[_gkey(prefix, "_init")] = True
 
 
 def reset_game_fields(prefix: str):
@@ -853,6 +859,16 @@ def fill_from_hltb(prefix: str):
         st.session_state[_gkey(prefix, c)] = "" if r[c] is None else f"{r[c]:g}"
     st.session_state[_gkey(prefix, "hltb_url")] = r["url"]
     st.session_state[_gkey(prefix, "hltb_id")] = r["hltb_id"]
+    genres = hltb.fetch_genres(r["hltb_id"])
+    if genres:
+        current = st.session_state.get(_gkey(prefix, "tag")) or []
+        st.session_state[_gkey(prefix, "tag")] = current + [g for g in genres if g not in current]
+        msg = ("ok", "Generi trovati: " + ", ".join(genres) + ". Controllali prima di salvare.")
+    elif genres is None:
+        msg = ("warn", "Durate e piattaforme sono a posto, ma non sono riuscito a leggere i generi dalla pagina del gioco: aggiungili a mano.")
+    else:
+        msg = ("warn", "La pagina del gioco non riporta generi leggibili: aggiungili a mano.")
+    st.session_state[_gkey(prefix, "gmsg")] = msg
 
 
 def hltb_search_block(prefix: str):
@@ -877,12 +893,15 @@ def hltb_search_block(prefix: str):
         st.radio("Risultati", range(len(results)), format_func=lambda i: hltb.label(results[i]),
                  key=_gkey(prefix, "pick"), index=0)
         st.button("Usa questo risultato", key=_gkey(prefix, "use"), on_click=fill_from_hltb, args=(prefix,))
+    msg = st.session_state.get(_gkey(prefix, "gmsg"))
+    if msg:
+        (st.success if msg[0] == "ok" else st.warning)(msg[1])
 
 
 def game_form(data, prefix: str, submit_label: str):
     """Modulo gioco condiviso tra 'nuovo' e 'modifica'. Restituisce la riga se inviato e valido."""
-    tags = sorted(set(L.all_tags(data)) | set(st.session_state[_gkey(prefix, "tag")]), key=str.lower)
-    plats = sorted(set(L.PIATTAFORME_BASE) | set(L.all_platforms(data)) | set(st.session_state[_gkey(prefix, "piatt")]),
+    tags = sorted(set(L.all_tags(data)) | set(st.session_state.get(_gkey(prefix, "tag")) or []), key=str.lower)
+    plats = sorted(set(L.PIATTAFORME_BASE) | set(L.all_platforms(data)) | set(st.session_state.get(_gkey(prefix, "piatt")) or []),
                    key=str.lower)
     with st.form(_gkey(prefix, "form")):
         st.text_input("Titolo", key=_gkey(prefix, "titolo"))
@@ -1015,33 +1034,48 @@ def admin_data(data):
 
     st.markdown("**Completa i giochi da HowLongToBeat**")
     g = data["giochi"]
-    missing = g[g["hltb_id"].str.strip() == ""]
-    st.caption(f"{len(missing)} giochi senza dati HowLongToBeat. L'app prende il risultato più simile al titolo; "
-               "quelli incerti li segnala da controllare a mano.")
-    if len(missing) and st.button("Completa i dati mancanti"):
+    no_hltb = g["hltb_id"].str.strip() == ""
+    no_genres = g["tag"].str.strip() == ""
+    todo = g[no_hltb | no_genres]
+    st.caption(f"{int(no_hltb.sum())} giochi senza dati HowLongToBeat, {int(no_genres.sum())} senza generi. "
+               "L'app prende il risultato più simile al titolo; quelli incerti li segnala da controllare a mano. "
+               "I generi vengono solo aggiunti, mai tolti.")
+    if len(todo) and st.button("Completa i dati mancanti"):
         df, report = g.copy(), []
         bar = st.progress(0.0)
-        for i, (_, row) in enumerate(missing.iterrows(), 1):
-            res = hltb.search(row["titolo"], limit=1)
-            if res is None:
-                report.append({"Gioco": row["titolo"], "Esito": "ricerca non riuscita"})
-            elif not res or res[0]["similarita"] < 0.75:
-                report.append({"Gioco": row["titolo"], "Esito": "da controllare a mano"})
-            else:
-                r, mask = res[0], df["game_id"] == row["game_id"]
-                plats = L.split_multi(row["piattaforme"])
-                df.loc[mask, "piattaforme"] = L.join_list(plats + [p for p in r["piattaforme"] if p not in plats])
-                if not row["anno"].strip():
-                    df.loc[mask, "anno"] = r["anno"]
-                for c in ["ore_storia", "ore_extra", "ore_completo"]:
-                    df.loc[mask, c] = "" if r[c] is None else f"{r[c]:g}"
-                df.loc[mask, ["hltb_id", "hltb_url"]] = [r["hltb_id"], r["url"]]
-                report.append({"Gioco": row["titolo"], "Esito": f"ok → {r['nome']}"})
-            bar.progress(i / len(missing))
-        if any(x["Esito"].startswith("ok") for x in report):
+        for i, (_, row) in enumerate(todo.iterrows(), 1):
+            mask, hid, esito = df["game_id"] == row["game_id"], row["hltb_id"].strip(), ""
+            if not hid:
+                res = hltb.search(row["titolo"], limit=1)
+                if res is None:
+                    esito = "ricerca non riuscita"
+                elif not res or res[0]["similarita"] < 0.75:
+                    esito = "da controllare a mano"
+                else:
+                    r = res[0]
+                    plats = L.split_multi(row["piattaforme"])
+                    df.loc[mask, "piattaforme"] = L.join_list(plats + [p for p in r["piattaforme"] if p not in plats])
+                    if not row["anno"].strip():
+                        df.loc[mask, "anno"] = r["anno"]
+                    for c in ["ore_storia", "ore_extra", "ore_completo"]:
+                        df.loc[mask, c] = "" if r[c] is None else f"{r[c]:g}"
+                    df.loc[mask, ["hltb_id", "hltb_url"]] = [r["hltb_id"], r["url"]]
+                    hid, esito = r["hltb_id"], f"ok → {r['nome']}"
+            genres_note = ""
+            if hid:
+                genres = hltb.fetch_genres(hid)
+                if genres:
+                    current = L.split_list(df.loc[mask, "tag"].iloc[0])
+                    df.loc[mask, "tag"] = L.join_list(current + [x for x in genres if x not in current])
+                    genres_note = ", ".join(genres)
+                else:
+                    genres_note = "non trovati" if genres == [] else "pagina non raggiungibile"
+            report.append({"Gioco": row["titolo"], "Esito": esito or "dati già presenti", "Generi": genres_note})
+            bar.progress(i / len(todo))
+        if not df.equals(g):
             save_table("giochi", df)
         st.dataframe(pd.DataFrame(report), hide_index=True)
-        st.caption("Controlla gli abbinamenti in Giochi: se uno è sbagliato, correggilo cercando di nuovo.")
+        st.caption("Controlla gli abbinamenti e i generi in Giochi: se qualcosa è sbagliato, correggilo lì.")
     st.divider()
 
     st.markdown("**Backup**")

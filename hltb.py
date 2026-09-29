@@ -80,3 +80,118 @@ def label(result: dict) -> str:
     if result["ore_completo"]:
         parts.append(f"completo {result['ore_completo']:g} h")
     return " · ".join(parts)
+
+
+# ---------------------------------------------------------------- generi
+#
+# I risultati di ricerca non contengono i generi: stanno nella pagina del singolo
+# gioco. Qui la pagina viene scaricata e letta "al meglio": prima i dati
+# strutturati che la pagina incorpora (__NEXT_DATA__), poi il testo visibile
+# ("Genres: …"). Se HowLongToBeat cambia la pagina, la funzione restituisce []
+# e l'app continua a funzionare: i generi si aggiungono a mano.
+
+USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+
+# Generi di HowLongToBeat → etichette usate dal club. Quelli non in elenco restano in inglese.
+GENERI = {
+    "action": "Action", "adventure": "Avventura", "roleplaying": "RPG", "rpg": "RPG",
+    "strategy": "Strategico", "tactical": "Tattico", "turnbased": "A turni",
+    "roguelike": "Roguelike", "roguelite": "Roguelike", "platform": "Platform", "platformer": "Platform",
+    "puzzle": "Puzzle", "horror": "Horror", "survival": "Survival", "shooter": "Sparatutto",
+    "simulation": "Simulazione", "sports": "Sport", "racing": "Guida", "driving": "Guida",
+    "racingdriving": "Guida", "fighting": "Picchiaduro", "pointandclick": "Punta e clicca",
+    "visualnovel": "Visual novel", "metroidvania": "Metroidvania", "openworld": "Open world",
+    "sandbox": "Sandbox", "stealth": "Stealth", "hackandslash": "Hack and slash",
+    "management": "Gestionale", "citybuilding": "Gestionale", "music": "Ritmo", "rhythm": "Ritmo",
+    "musicrhythm": "Ritmo", "card": "Carte", "cardgame": "Carte", "party": "Party",
+    "beatemup": "Picchiaduro", "interactivestory": "Narrativo", "narrative": "Narrativo",
+}
+# Prospettive e stili di visuale: non sono generi, vengono scartati.
+PROSPETTIVE = ("person", "topdown", "isometric", "scrolling", "side", "vertical", "2d", "3d", "overhead")
+
+
+def _norm(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+def map_genres(raw: list[str]) -> list[str]:
+    """Converte i generi HLTB nelle etichette del club, senza doppioni."""
+    norm = [_norm(g) for g in raw]
+    out: list[str] = []
+    fps = any(n == "firstperson" for n in norm) and any(n == "shooter" for n in norm)
+    for original, n in zip(raw, norm):
+        if not n or any(p == n or n.endswith(p) for p in PROSPETTIVE):
+            continue
+        if fps and n == "shooter":
+            label = "FPS"
+        else:
+            label = GENERI.get(n, original.strip())
+        if label not in out:
+            out.append(label)
+    return out
+
+
+def _split_genres(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [g.strip() for g in str(value or "").replace("/", ",").split(",") if g.strip()]
+
+
+def _find_genre_field(obj, depth: int = 0):
+    """Cerca ricorsivamente un campo che contenga i generi (es. 'profile_genre')."""
+    if depth > 12:
+        return None
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if "genre" in str(key).lower() and value and isinstance(value, (str, list)):
+                return value
+        for value in obj.values():
+            found = _find_genre_field(value, depth + 1)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for value in obj:
+            found = _find_genre_field(value, depth + 1)
+            if found:
+                return found
+    return None
+
+
+def parse_genres(html: str) -> list[str]:
+    """Estrae i generi (grezzi, in inglese) dall'HTML della pagina di un gioco."""
+    import json
+    import re
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, "html.parser")
+    script = soup.find("script", id="__NEXT_DATA__")
+    if script and script.string:
+        try:
+            found = _find_genre_field(json.loads(script.string))
+        except ValueError:
+            found = None
+        if found:
+            return _split_genres(found)
+    text = soup.get_text("\n")
+    match = re.search(r"Genres?\s*:\s*\n?\s*([^\n]+)", text)
+    return _split_genres(match.group(1)) if match else []
+
+
+def fetch_genres(hltb_id: str) -> list[str] | None:
+    """Generi del gioco, già convertiti. [] se la pagina non li contiene, None se non raggiungibile."""
+    if not str(hltb_id).strip():
+        return []
+    import requests
+
+    try:
+        resp = requests.get(game_url(hltb_id), headers={"User-Agent": USER_AGENT, "Referer": "https://howlongtobeat.com/"},
+                            timeout=TIMEOUT_SECONDI)
+        resp.raise_for_status()
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        return map_genres(parse_genres(resp.text))
+    except Exception:  # noqa: BLE001 - pagina inattesa: nessun genere
+        return []
