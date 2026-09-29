@@ -510,24 +510,22 @@ def stats_wishlist(data, me):
 
 # ================================================================ catalogo giochi
 
-def games_tab(full_data, me):
-    data = L.visible_data(full_data)
-    cat = L.games_catalog(data)
-    if cat.empty:
-        st.info("Il database dei giochi è ancora vuoto.")
-        return
-    query = st.text_input("Cerca un gioco", placeholder="Titolo…", label_visibility="collapsed")
-    with st.expander("Filtri"):
-        genres = ms("Generi", L.all_tags(data), help="Mostra i giochi che hanno tutti i generi scelti.")
-        plats = ms("Piattaforme", L.all_platforms(data), help="Mostra i giochi disponibili su almeno una delle piattaforme scelte.")
+def filter_games(cat: pd.DataFrame, key: str) -> pd.DataFrame:
+    """Filtri sempre visibili: titolo, generi, piattaforme, durata massima. Restituisce i giochi filtrati."""
+    all_genres = sorted({t for tags in cat["tags"] for t in tags}, key=str.lower)
+    all_plats = sorted({p for plats in cat["platforms"] for p in plats}, key=str.lower)
+    with st.container(border=True):
+        query = st.text_input("Cerca per titolo", placeholder="Titolo…", key=f"{key}_q")
+        genres = ms("Generi", all_genres, key=f"{key}_gen", help="Mostra i giochi che hanno tutti i generi scelti.")
+        plats = ms("Piattaforme", all_plats, key=f"{key}_plat", help="Mostra i giochi disponibili su almeno una delle piattaforme scelte.")
         known = cat["ore_storia"].dropna()
-        hours_range, keep_unknown = None, True
+        max_hours, keep_unknown, top = None, True, 0
         if not known.empty:
-            top = int(np.ceil(known.max()))
-            hours_range = st.slider("Durata della storia principale (ore)", 0, max(top, 1), (0, max(top, 1)))
-            keep_unknown = st.checkbox("Includi i giochi senza durata", value=True)
-        only = st.radio("Mostra", ["Tutti", "Già giocati", "Mai giocati"], horizontal=True)
-        order = st.radio("Ordina per", ["Titolo", "Durata", "FINAL"], horizontal=True)
+            top = max(int(np.ceil(known.max())), 1)
+            max_hours = st.slider("Durata massima (ore, storia principale)", 0, top, top, key=f"{key}_ore",
+                                  help="Mostra i giochi che si finiscono in al massimo queste ore.")
+            if max_hours < top:
+                keep_unknown = st.checkbox("Mostra anche i giochi senza durata", value=False, key=f"{key}_unk")
 
     res = cat
     if query.strip():
@@ -536,39 +534,46 @@ def games_tab(full_data, me):
         res = res[res["tags"].map(lambda t: set(genres) <= set(t))]
     if plats:
         res = res[res["platforms"].map(lambda p: bool(set(plats) & set(p)))]
-    if hours_range:
-        lo, hi = hours_range
-        in_range = res["ore_storia"].between(lo, hi)
-        res = res[in_range | (res["ore_storia"].isna() & keep_unknown)]
+    if max_hours is not None and max_hours < top:
+        res = res[(res["ore_storia"] <= max_hours) | (res["ore_storia"].isna() & keep_unknown)]
+    return res
+
+
+def games_table(res: pd.DataFrame, extra_cols: list[str] | None = None):
+    view = pd.DataFrame({
+        "Gioco": res["titolo"],
+        "Ore": res["ore_storia"],
+        "Generi": res["tags"].map(", ".join),
+        "Piattaforme": res["platforms"].map(", ".join),
+        "FINAL": res["final_medio"],
+        "Giocato": res["giocato"],
+        "HLTB": [u or hltb.search_url(t) for u, t in zip(res["hltb_url"], res["titolo"])],
+    })
+    for c in extra_cols or []:
+        view[c] = res[c].values
+    view = view.sort_values("Gioco", key=lambda s: s.str.lower())
+    st.dataframe(view, hide_index=True, column_config={
+        "Gioco": st.column_config.TextColumn("Gioco", pinned=True),
+        "Ore": st.column_config.NumberColumn("⏱ Ore", format="%.0f", help="Storia principale, da HowLongToBeat"),
+        "FINAL": st.column_config.NumberColumn("⭐ FINAL", format="%.1f"),
+        "Giocato": st.column_config.CheckboxColumn("✅"),
+        "HLTB": st.column_config.LinkColumn("HLTB", display_text="apri"),
+    })
+
+
+def games_tab(full_data, me):
+    data = L.visible_data(full_data)
+    cat = L.games_catalog(data)
+    if cat.empty:
+        st.info("Il database dei giochi è ancora vuoto.")
+        return
+    res = filter_games(cat, "cat")
+    only = st.segmented_control("Mostra", ["Tutti", "Già giocati", "Mai giocati"], default="Tutti",
+                                label_visibility="collapsed", key="cat_only") or "Tutti"
     if only != "Tutti":
         res = res[res["giocato"] == (only == "Già giocati")]
-    key = {"Titolo": "titolo", "Durata": "ore_storia", "FINAL": "final_medio"}[order]
-    res = res.sort_values(key, ascending=(order != "FINAL"), na_position="last",
-                          key=(lambda s: s.str.lower()) if key == "titolo" else None)
-
-    st.caption(f"{len(res)} giochi su {len(cat)}")
-    for _, g in res.iterrows():
-        with st.container(border=True):
-            title = f"**{g['titolo']}**" + (f" · {g['anno']}" if g["anno"] else "")
-            if g["giocato"]:
-                title += " · ✅ giocato"
-            st.markdown(title)
-            meta = " · ".join(g["tags"]) or "senza generi"
-            if g["platforms"]:
-                meta += "  \n🖥️ " + ", ".join(g["platforms"])
-            st.caption(meta)
-            short = {"ore_storia": "storia", "ore_extra": "+ extra", "ore_completo": "completo"}
-            durs = [f"{short[c]} {fmt(g[c], 0)} h" for c in L.DURATE if not np.isnan(g[c])]
-            if durs:
-                st.markdown("⏱ " + " · ".join(durs))
-            bits = []
-            if not np.isnan(g["final_medio"]):
-                bits.append(f"⭐ FINAL {fmt(g['final_medio'])}")
-            if g["proposto"]:
-                bits.append(f"proposto {g['proposto']} volt{'a' if g['proposto'] == 1 else 'e'}")
-            link = g["hltb_url"] or hltb.search_url(g["titolo"])
-            bits.append(f"[HowLongToBeat]({link})")
-            st.markdown(" · ".join(bits))
+    st.caption(f"{len(res)} giochi su {len(cat)}. Tocca l'intestazione di una colonna per ordinare.")
+    games_table(res)
 
 
 # ================================================================ storico
@@ -972,10 +977,11 @@ def admin_games(data):
                     st.toast("Gioco aggiornato")
                     st.rerun()
 
-    view = g.assign(tag=g["tag"].str.replace(";", ", "), piattaforme=g["piattaforme"].map(lambda p: ", ".join(L.split_multi(p))))
-    st.dataframe(view[["titolo", "tag", "piattaforme", "ore_storia", "hltb_url"]], hide_index=True, column_config={
-        "titolo": "Titolo", "tag": "Generi", "piattaforme": "Piattaforme", "ore_storia": "Ore (storia)",
-        "hltb_url": st.column_config.LinkColumn("HLTB", display_text="apri")})
+    st.markdown("**Database dei giochi**")
+    cat = L.games_catalog(data)
+    res = filter_games(cat, "adm")
+    st.caption(f"{len(res)} giochi su {len(cat)}. Qui il FINAL include anche i voti non ancora rivelati.")
+    games_table(res)
 
 
 def admin_members(data):
