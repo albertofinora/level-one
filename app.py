@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import hltb
 import logic as L
 import seed
 from storage import SCHEMA, LocalStore, SheetsStore, new_id, now_ts
@@ -89,6 +90,12 @@ def fmt(x, dec: int = 1) -> str:
 def fmt_date(iso: str) -> str:
     parts = str(iso).split("-")
     return "/".join(reversed(parts)) if len(parts) == 3 else str(iso)
+
+
+def ms(*args, **kwargs):
+    """st.multiselect con il testo segnaposto in italiano."""
+    kwargs.setdefault("placeholder", "Scegli…")
+    return st.multiselect(*args, **kwargs)
 
 
 def num_cols(cols, dec: int = 1) -> dict:
@@ -179,6 +186,7 @@ def proposals_tab(data, me: str):
         return
 
     nm, gm = L.name_map(data), L.game_map(data)
+    durs = L.durations(data)
     for _, per in open_periods.iterrows():
         st.subheader(f"Periodo {per['numero']} · proposte di {nm.get(per['proponente_id'], '?')}")
         options = L.split_list(per["opzioni"])
@@ -202,7 +210,8 @@ def proposals_tab(data, me: str):
             for g in options:
                 est, why = L.predict(data, g, me)
                 help_text = None if np.isnan(est) else f"Stima del tuo voto: {fmt(est)} ({why})"
-                if st.checkbox(gm.get(g, g), value=bool(previous and g in previous), key=f"v_{per['period_id']}_{g}", help=help_text):
+                label = gm.get(g, g) + (f" · ⏱ {fmt(durs[g], 0)} h" if g in durs else "")
+                if st.checkbox(label, value=bool(previous and g in previous), key=f"v_{per['period_id']}_{g}", help=help_text):
                     picks.append(g)
             ok = st.form_submit_button("Salva il mio voto", type="primary", width="stretch")
         if ok and save_append(
@@ -499,6 +508,69 @@ def stats_wishlist(data, me):
         "proposto": "Volte proposto", "voti": "Voti totali"})
 
 
+# ================================================================ catalogo giochi
+
+def games_tab(full_data, me):
+    data = L.visible_data(full_data)
+    cat = L.games_catalog(data)
+    if cat.empty:
+        st.info("Il database dei giochi è ancora vuoto.")
+        return
+    query = st.text_input("Cerca un gioco", placeholder="Titolo…", label_visibility="collapsed")
+    with st.expander("Filtri"):
+        genres = ms("Generi", L.all_tags(data), help="Mostra i giochi che hanno tutti i generi scelti.")
+        plats = ms("Piattaforme", L.all_platforms(data), help="Mostra i giochi disponibili su almeno una delle piattaforme scelte.")
+        known = cat["ore_storia"].dropna()
+        hours_range, keep_unknown = None, True
+        if not known.empty:
+            top = int(np.ceil(known.max()))
+            hours_range = st.slider("Durata della storia principale (ore)", 0, max(top, 1), (0, max(top, 1)))
+            keep_unknown = st.checkbox("Includi i giochi senza durata", value=True)
+        only = st.radio("Mostra", ["Tutti", "Già giocati", "Mai giocati"], horizontal=True)
+        order = st.radio("Ordina per", ["Titolo", "Durata", "FINAL"], horizontal=True)
+
+    res = cat
+    if query.strip():
+        res = res[res["titolo"].str.contains(query.strip(), case=False, regex=False)]
+    if genres:
+        res = res[res["tags"].map(lambda t: set(genres) <= set(t))]
+    if plats:
+        res = res[res["platforms"].map(lambda p: bool(set(plats) & set(p)))]
+    if hours_range:
+        lo, hi = hours_range
+        in_range = res["ore_storia"].between(lo, hi)
+        res = res[in_range | (res["ore_storia"].isna() & keep_unknown)]
+    if only != "Tutti":
+        res = res[res["giocato"] == (only == "Già giocati")]
+    key = {"Titolo": "titolo", "Durata": "ore_storia", "FINAL": "final_medio"}[order]
+    res = res.sort_values(key, ascending=(order != "FINAL"), na_position="last",
+                          key=(lambda s: s.str.lower()) if key == "titolo" else None)
+
+    st.caption(f"{len(res)} giochi su {len(cat)}")
+    for _, g in res.iterrows():
+        with st.container(border=True):
+            title = f"**{g['titolo']}**" + (f" · {g['anno']}" if g["anno"] else "")
+            if g["giocato"]:
+                title += " · ✅ giocato"
+            st.markdown(title)
+            meta = " · ".join(g["tags"]) or "senza generi"
+            if g["platforms"]:
+                meta += "  \n🖥️ " + ", ".join(g["platforms"])
+            st.caption(meta)
+            short = {"ore_storia": "storia", "ore_extra": "+ extra", "ore_completo": "completo"}
+            durs = [f"{short[c]} {fmt(g[c], 0)} h" for c in L.DURATE if not np.isnan(g[c])]
+            if durs:
+                st.markdown("⏱ " + " · ".join(durs))
+            bits = []
+            if not np.isnan(g["final_medio"]):
+                bits.append(f"⭐ FINAL {fmt(g['final_medio'])}")
+            if g["proposto"]:
+                bits.append(f"proposto {g['proposto']} volt{'a' if g['proposto'] == 1 else 'e'}")
+            link = g["hltb_url"] or hltb.search_url(g["titolo"])
+            bits.append(f"[HowLongToBeat]({link})")
+            st.markdown(" · ".join(bits))
+
+
 # ================================================================ storico
 
 def history_tab(data, me):
@@ -604,7 +676,7 @@ def admin_periods(data):
             with st.form("nuovo_periodo", clear_on_submit=True):
                 prop = st.selectbox("Proponente", active_ids, format_func=nm.get)
                 when = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
-                opts = st.multiselect("Opzioni (fino a 5)", games, format_func=gm.get, max_selections=5,
+                opts = ms("Opzioni (fino a 5)", games, format_func=gm.get, max_selections=5,
                                       help="Se un gioco non c'è, aggiungilo prima nella sezione Giochi.")
                 start = st.radio("Stato iniziale", ["bozza", "votazione"], format_func=L.ETICHETTE_STATO.get, horizontal=True)
                 ok = st.form_submit_button("Crea periodo", type="primary")
@@ -629,7 +701,7 @@ def admin_periods(data):
 
             if stato == "bozza":
                 with st.form(f"bozza_{pid}"):
-                    new_opts = st.multiselect("Opzioni", games, default=[g for g in options if g in gm],
+                    new_opts = ms("Opzioni", games, default=[g for g in options if g in gm],
                                               format_func=gm.get, max_selections=5)
                     c1, c2 = st.columns(2)
                     save = c1.form_submit_button("Salva opzioni")
@@ -738,28 +810,125 @@ def admin_ratings_table(data, per):
                      column_config={**num_cols(numeric), "Ore": st.column_config.NumberColumn(format="%.0f")})
 
 
-def admin_games(data):
-    tags = L.all_tags(data)
-    with st.expander("➕ Nuovo gioco", expanded=False):
-        with st.form("nuovo_gioco", clear_on_submit=True):
-            title = st.text_input("Titolo")
-            gtags = st.multiselect("Generi (tag)", tags, accept_new_options=True, help="Puoi scriverne di nuovi.")
-            year = st.text_input("Anno di uscita (facoltativo)")
-            plat = st.text_input("Piattaforme (facoltativo)", placeholder="PC, PS5, Switch…")
-            ok = st.form_submit_button("Aggiungi gioco", type="primary")
-        if ok:
-            existing = {t.lower() for t in data["giochi"]["titolo"]}
-            if not title.strip():
-                st.error("Scrivi il titolo.")
-            elif title.strip().lower() in existing:
-                st.error("Questo gioco c'è già.")
-            else:
-                row = {"game_id": new_id(), "titolo": title.strip(), "tag": L.join_list(gtags), "anno": year.strip(), "piattaforme": plat.strip()}
-                if save_table("giochi", pd.concat([data["giochi"], pd.DataFrame([row])], ignore_index=True)):
-                    st.toast("Gioco aggiunto")
-                    st.rerun()
+GAME_FIELDS = ["titolo", "tag", "anno", "piatt", "ore_storia", "ore_extra", "ore_completo", "hltb_url", "hltb_id"]
 
+
+def _gkey(prefix: str, field: str) -> str:
+    return f"{prefix}_{field}"
+
+
+def init_game_fields(prefix: str, row=None):
+    """Prepara i valori del modulo gioco nello stato della sessione (una sola volta)."""
+    if st.session_state.get(_gkey(prefix, "_init")):
+        return
+    get = (lambda c: str(row[c]) if row is not None and c in row else "")
+    st.session_state[_gkey(prefix, "titolo")] = get("titolo")
+    st.session_state[_gkey(prefix, "tag")] = L.split_list(get("tag"))
+    st.session_state[_gkey(prefix, "anno")] = get("anno")
+    st.session_state[_gkey(prefix, "piatt")] = L.split_multi(get("piattaforme"))
+    for c in ["ore_storia", "ore_extra", "ore_completo", "hltb_url", "hltb_id"]:
+        st.session_state[_gkey(prefix, c)] = get(c)
+    st.session_state[_gkey(prefix, "_init")] = True
+
+
+def reset_game_fields(prefix: str):
+    for k in [k for k in st.session_state if str(k).startswith(prefix + "_")]:
+        del st.session_state[k]
+
+
+def fill_from_hltb(prefix: str):
+    """Callback: copia nel modulo il risultato HLTB scelto."""
+    results = st.session_state.get(_gkey(prefix, "res")) or []
+    idx = st.session_state.get(_gkey(prefix, "pick"))
+    if idx is None or idx >= len(results):
+        return
+    r = results[idx]
+    if not st.session_state.get(_gkey(prefix, "titolo")):
+        st.session_state[_gkey(prefix, "titolo")] = r["nome"]
+    if r["anno"]:
+        st.session_state[_gkey(prefix, "anno")] = r["anno"]
+    current = st.session_state.get(_gkey(prefix, "piatt")) or []
+    st.session_state[_gkey(prefix, "piatt")] = current + [p for p in r["piattaforme"] if p not in current]
+    for c in ["ore_storia", "ore_extra", "ore_completo"]:
+        st.session_state[_gkey(prefix, c)] = "" if r[c] is None else f"{r[c]:g}"
+    st.session_state[_gkey(prefix, "hltb_url")] = r["url"]
+    st.session_state[_gkey(prefix, "hltb_id")] = r["hltb_id"]
+
+
+def hltb_search_block(prefix: str):
+    st.markdown("**Dati da HowLongToBeat** (facoltativo)")
+    c1, c2 = st.columns([3, 1], vertical_alignment="bottom")
+    query = c1.text_input("Titolo da cercare", value=st.session_state.get(_gkey(prefix, "titolo"), ""),
+                          key=_gkey(prefix, "q"))
+    if c2.button("🔍 Cerca", key=_gkey(prefix, "go"), width="stretch"):
+        with st.spinner("Cerco su HowLongToBeat…"):
+            st.session_state[_gkey(prefix, "res")] = hltb.search(query)
+        st.session_state[_gkey(prefix, "searched")] = query
+    if not st.session_state.get(_gkey(prefix, "searched")):
+        return
+    results = st.session_state.get(_gkey(prefix, "res"))
+    link = hltb.search_url(st.session_state[_gkey(prefix, "searched")])
+    if results is None:
+        st.warning(f"La ricerca su HowLongToBeat non è riuscita: il sito può aver cambiato qualcosa o bloccato la richiesta. "
+                   f"Puoi [cercarlo tu]({link}) e copiare i dati nei campi qui sotto.")
+    elif not results:
+        st.info(f"Nessun risultato. Prova con il titolo in inglese, oppure [cercalo tu]({link}).")
+    else:
+        st.radio("Risultati", range(len(results)), format_func=lambda i: hltb.label(results[i]),
+                 key=_gkey(prefix, "pick"), index=0)
+        st.button("Usa questo risultato", key=_gkey(prefix, "use"), on_click=fill_from_hltb, args=(prefix,))
+
+
+def game_form(data, prefix: str, submit_label: str):
+    """Modulo gioco condiviso tra 'nuovo' e 'modifica'. Restituisce la riga se inviato e valido."""
+    tags = sorted(set(L.all_tags(data)) | set(st.session_state[_gkey(prefix, "tag")]), key=str.lower)
+    plats = sorted(set(L.PIATTAFORME_BASE) | set(L.all_platforms(data)) | set(st.session_state[_gkey(prefix, "piatt")]),
+                   key=str.lower)
+    with st.form(_gkey(prefix, "form")):
+        st.text_input("Titolo", key=_gkey(prefix, "titolo"))
+        ms("Generi", tags, accept_new_options=True, key=_gkey(prefix, "tag"), help="Puoi scriverne di nuovi.")
+        ms("Piattaforme", plats, accept_new_options=True, key=_gkey(prefix, "piatt"))
+        st.text_input("Anno di uscita", key=_gkey(prefix, "anno"))
+        st.caption("Durata in ore (da HowLongToBeat o a mano). Lascia vuoto se non la conosci.")
+        c1, c2, c3 = st.columns(3)
+        c1.text_input("Storia", key=_gkey(prefix, "ore_storia"))
+        c2.text_input("+ Extra", key=_gkey(prefix, "ore_extra"))
+        c3.text_input("Completo", key=_gkey(prefix, "ore_completo"))
+        st.text_input("Link HowLongToBeat", key=_gkey(prefix, "hltb_url"), placeholder="https://howlongtobeat.com/game/…")
+        ok = st.form_submit_button(submit_label, type="primary")
+    if not ok:
+        return None
+    v = {f: st.session_state.get(_gkey(prefix, f)) for f in GAME_FIELDS}
+    hours = {}
+    for c in ["ore_storia", "ore_extra", "ore_completo"]:
+        raw = str(v[c] or "").strip()
+        num = L.to_num(raw)
+        if raw and np.isnan(num):
+            st.error(f"“{raw}” non è un numero di ore valido.")
+            return None
+        hours[c] = "" if np.isnan(num) else f"{num:g}"
+    if not str(v["titolo"]).strip():
+        st.error("Scrivi il titolo.")
+        return None
+    return {"titolo": v["titolo"].strip(), "tag": L.join_list(v["tag"] or []), "anno": str(v["anno"] or "").strip(),
+            "piattaforme": L.join_list(v["piatt"] or []), "hltb_url": str(v["hltb_url"] or "").strip(),
+            "hltb_id": str(v["hltb_id"] or "").strip(), **hours}
+
+
+def admin_games(data):
     g = data["giochi"]
+    with st.expander("➕ Nuovo gioco", expanded=False):
+        init_game_fields("ng")
+        hltb_search_block("ng")
+        row = game_form(data, "ng", "Aggiungi gioco")
+        if row is not None:
+            if row["titolo"].lower() in {t.lower() for t in g["titolo"]}:
+                st.error("Questo gioco c'è già.")
+            elif save_table("giochi", pd.concat([g, pd.DataFrame([{"game_id": new_id(), **row}])], ignore_index=True)):
+                reset_game_fields("ng")
+                st.toast("Gioco aggiunto")
+                st.rerun()
+
     if g.empty:
         st.info("Nessun gioco ancora.")
         return
@@ -767,23 +936,27 @@ def admin_games(data):
     ids = sorted(gm, key=lambda x: gm[x].lower())
     gid = st.selectbox("Modifica un gioco", ids, format_func=gm.get, index=None, placeholder="Scegli un gioco")
     if gid:
-        row = g[g["game_id"] == gid].iloc[0]
-        with st.form(f"edit_{gid}"):
-            title = st.text_input("Titolo", value=row["titolo"])
-            current = L.split_list(row["tag"])
-            gtags = st.multiselect("Generi (tag)", sorted(set(tags) | set(current)), default=current, accept_new_options=True)
-            year = st.text_input("Anno di uscita", value=row["anno"])
-            plat = st.text_input("Piattaforme", value=row["piattaforme"])
-            ok = st.form_submit_button("Salva modifiche", type="primary")
-        if ok:
-            df = g.copy()
-            mask = df["game_id"] == gid
-            df.loc[mask, ["titolo", "tag", "anno", "piattaforme"]] = [title.strip(), L.join_list(gtags), year.strip(), plat.strip()]
-            if save_table("giochi", df):
-                st.toast("Gioco aggiornato")
-                st.rerun()
-    st.dataframe(g[["titolo", "tag", "anno", "piattaforme"]].assign(tag=g["tag"].str.replace(";", ", ")),
-                 hide_index=True, column_config={"titolo": "Titolo", "tag": "Generi", "anno": "Anno", "piattaforme": "Piattaforme"})
+        prefix = f"eg_{gid}"
+        init_game_fields(prefix, g[g["game_id"] == gid].iloc[0])
+        hltb_search_block(prefix)
+        row = game_form(data, prefix, "Salva modifiche")
+        if row is not None:
+            others = {t.lower() for i, t in zip(g["game_id"], g["titolo"]) if i != gid}
+            if row["titolo"].lower() in others:
+                st.error("Esiste già un altro gioco con questo titolo.")
+            else:
+                df = g.copy()
+                for k, v in row.items():
+                    df.loc[df["game_id"] == gid, k] = v
+                if save_table("giochi", df):
+                    reset_game_fields(prefix)
+                    st.toast("Gioco aggiornato")
+                    st.rerun()
+
+    view = g.assign(tag=g["tag"].str.replace(";", ", "), piattaforme=g["piattaforme"].map(lambda p: ", ".join(L.split_multi(p))))
+    st.dataframe(view[["titolo", "tag", "piattaforme", "ore_storia", "hltb_url"]], hide_index=True, column_config={
+        "titolo": "Titolo", "tag": "Generi", "piattaforme": "Piattaforme", "ore_storia": "Ore (storia)",
+        "hltb_url": st.column_config.LinkColumn("HLTB", display_text="apri")})
 
 
 def admin_members(data):
@@ -840,6 +1013,37 @@ def admin_data(data):
                 st.rerun()
         st.divider()
 
+    st.markdown("**Completa i giochi da HowLongToBeat**")
+    g = data["giochi"]
+    missing = g[g["hltb_id"].str.strip() == ""]
+    st.caption(f"{len(missing)} giochi senza dati HowLongToBeat. L'app prende il risultato più simile al titolo; "
+               "quelli incerti li segnala da controllare a mano.")
+    if len(missing) and st.button("Completa i dati mancanti"):
+        df, report = g.copy(), []
+        bar = st.progress(0.0)
+        for i, (_, row) in enumerate(missing.iterrows(), 1):
+            res = hltb.search(row["titolo"], limit=1)
+            if res is None:
+                report.append({"Gioco": row["titolo"], "Esito": "ricerca non riuscita"})
+            elif not res or res[0]["similarita"] < 0.75:
+                report.append({"Gioco": row["titolo"], "Esito": "da controllare a mano"})
+            else:
+                r, mask = res[0], df["game_id"] == row["game_id"]
+                plats = L.split_multi(row["piattaforme"])
+                df.loc[mask, "piattaforme"] = L.join_list(plats + [p for p in r["piattaforme"] if p not in plats])
+                if not row["anno"].strip():
+                    df.loc[mask, "anno"] = r["anno"]
+                for c in ["ore_storia", "ore_extra", "ore_completo"]:
+                    df.loc[mask, c] = "" if r[c] is None else f"{r[c]:g}"
+                df.loc[mask, ["hltb_id", "hltb_url"]] = [r["hltb_id"], r["url"]]
+                report.append({"Gioco": row["titolo"], "Esito": f"ok → {r['nome']}"})
+            bar.progress(i / len(missing))
+        if any(x["Esito"].startswith("ok") for x in report):
+            save_table("giochi", df)
+        st.dataframe(pd.DataFrame(report), hide_index=True)
+        st.caption("Controlla gli abbinamenti in Giochi: se uno è sbagliato, correggilo cercando di nuovo.")
+    st.divider()
+
     st.markdown("**Backup**")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -874,18 +1078,20 @@ def main():
     st.markdown("## 🎮 Level One")
     st.caption(f"Ciao {nm[me]}!")
 
-    tabs = st.tabs(["🗳️ Proposte", "🎮 In gioco", "📊 Statistiche", "📜 Storico", "📖 Guida", "🔧 Admin"])
+    tabs = st.tabs(["🗳️ Proposte", "🎮 In gioco", "🕹️ Giochi", "📊 Statistiche", "📜 Storico", "📖 Guida", "🔧 Admin"])
     with tabs[0]:
         proposals_tab(data, me)
     with tabs[1]:
         playing_tab(data, me)
     with tabs[2]:
-        stats_tab(data, me)
+        games_tab(data, me)
     with tabs[3]:
-        history_tab(data, me)
+        stats_tab(data, me)
     with tabs[4]:
-        show_guide()
+        history_tab(data, me)
     with tabs[5]:
+        show_guide()
+    with tabs[6]:
         admin_gate(data)
 
     st.divider()

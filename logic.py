@@ -36,6 +36,11 @@ def split_list(value: str) -> list[str]:
     return [v.strip() for v in str(value or "").split(";") if v.strip()]
 
 
+def split_multi(value: str) -> list[str]:
+    """Come split_list, ma accetta anche la virgola (piattaforme scritte a mano nella prima versione)."""
+    return [v.strip() for v in str(value or "").replace(",", ";").split(";") if v.strip()]
+
+
 def join_list(values) -> str:
     return ";".join(v.strip() for v in values if str(v).strip())
 
@@ -110,6 +115,25 @@ def all_tags(data) -> list[str]:
     for t in data["giochi"]["tag"]:
         tags.update(split_list(t))
     return sorted(tags, key=str.lower)
+
+
+PIATTAFORME_BASE = ["PC", "PlayStation 5", "PlayStation 4", "Xbox Series X/S", "Xbox One",
+                    "Nintendo Switch", "Nintendo Switch 2", "Mobile"]
+DURATE = {"ore_storia": "Storia principale", "ore_extra": "Storia + extra", "ore_completo": "Completista"}
+
+
+def all_platforms(data) -> list[str]:
+    plats = set()
+    for p in data["giochi"]["piattaforme"]:
+        plats.update(split_multi(p))
+    return sorted(plats, key=str.lower)
+
+
+def durations(data) -> dict[str, float]:
+    """Ore della storia principale per gioco (solo quelle note)."""
+    g = data["giochi"]
+    out = {gid: to_num(h) for gid, h in zip(g["game_id"], g["ore_storia"])}
+    return {k: v for k, v in out.items() if not np.isnan(v)}
 
 
 def periods(data) -> pd.DataFrame:
@@ -406,3 +430,21 @@ def predict(data, game_id: str, member_id: str | None = None) -> tuple[float, st
     if by_tag.empty:
         return np.nan, "nessun gioco simile valutato"
     return by_tag.mean(), "in base a: " + ", ".join(by_tag.index)
+
+
+def games_catalog(data) -> pd.DataFrame:
+    """Tutti i giochi con generi, piattaforme, durate e storico nel club."""
+    g = data["giochi"].copy()
+    g["tags"] = g["tag"].map(split_list)
+    g["platforms"] = g["piattaforme"].map(split_multi)
+    for c in DURATE:
+        g[c] = g[c].map(to_num).astype(float)
+    gs = game_summary(data)
+    fin = dict(zip(gs["game_id"], gs["final_medio"])) if not gs.empty else {}
+    g["final_medio"] = g["game_id"].map(fin).astype(float)
+    p = data["periodi"]
+    played = p[p["stato"].isin(["in_gioco", "chiuso"])]
+    g["giocato"] = g["game_id"].isin(set(played["vincitore_id"]))
+    shown = p[p["stato"] != "bozza"]["opzioni"].map(split_list)
+    g["proposto"] = g["game_id"].map(lambda gid: int(sum(gid in opts for opts in shown)))
+    return g

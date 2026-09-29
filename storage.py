@@ -21,7 +21,10 @@ import pandas as pd
 
 SCHEMA: dict[str, list[str]] = {
     "membri": ["member_id", "nome", "attivo"],
-    "giochi": ["game_id", "titolo", "tag", "anno", "piattaforme"],
+    "giochi": [
+        "game_id", "titolo", "tag", "anno", "piattaforme",
+        "hltb_id", "hltb_url", "ore_storia", "ore_extra", "ore_completo",
+    ],
     "periodi": ["period_id", "numero", "proponente_id", "data", "stato", "opzioni", "vincitore_id", "rivelato"],
     "pin": ["member_id", "pin_hash", "ts"],
     "voti_proposte": ["period_id", "member_id", "scelte", "ts"],
@@ -110,7 +113,11 @@ class SheetsStore:
             ws = existing.get(table)
             if ws is None:
                 ws = self.sh.add_worksheet(title=table, rows=100, cols=len(cols))
-            if not ws.row_values(1):
+            header = ws.row_values(1)
+            if header != cols and cols[: len(header)] == header:
+                # Tabella vuota o creata da una versione precedente (colonne aggiunte in fondo).
+                if ws.col_count < len(cols):
+                    ws.add_cols(len(cols) - ws.col_count)
                 ws.update(range_name="A1", values=[cols], value_input_option="RAW")
             self.ws[table] = ws
 
@@ -130,6 +137,8 @@ class SheetsStore:
         ws = self.ws[table]
         if len(values) > ws.row_count:
             ws.add_rows(len(values) - ws.row_count)
+        if len(cols) > ws.col_count:
+            ws.add_cols(len(cols) - ws.col_count)
         ws.update(range_name="A1", values=values, value_input_option="RAW")
         # Elimina le righe vecchie rimaste sotto la tabella nuova.
         ws.resize(rows=max(len(values), 2))
