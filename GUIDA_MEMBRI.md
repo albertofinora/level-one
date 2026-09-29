@@ -48,7 +48,7 @@ I voti vanno da 1 a 10, anche con il mezzo punto. Lascia **–** sulle categorie
 - **Ambientazione**: mondo, atmosfera, stile visivo.
 - **Gameplay**: quanto è bello da giocare.
 - **Audio**: musica, effetti, doppiaggio.
-- **Longevità**: la durata era giusta per questo gioco? È un giudizio, non un conteggio: un gioco breve può meritare 10.
+- **Longevità**: la durata era giusta per questo gioco?.
 - **FINAL**: il tuo voto complessivo, di pancia. Non deve essere la media delle altre categorie.
 - **Ore giocate**: quante ore ci hai passato davvero. È un dato, non un voto.
 
