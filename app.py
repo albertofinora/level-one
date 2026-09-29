@@ -539,26 +539,74 @@ def filter_games(cat: pd.DataFrame, key: str) -> pd.DataFrame:
     return res
 
 
-def games_table(res: pd.DataFrame, extra_cols: list[str] | None = None):
+def games_table(res: pd.DataFrame):
     view = pd.DataFrame({
         "Gioco": res["titolo"],
-        "Ore": res["ore_storia"],
         "Generi": res["tags"].map(", ".join),
         "Piattaforme": res["platforms"].map(", ".join),
-        "FINAL": res["final_medio"],
-        "Giocato": res["giocato"],
+        "Ore": res["ore_storia"],
         "HLTB": [u or hltb.search_url(t) for u, t in zip(res["hltb_url"], res["titolo"])],
-    })
-    for c in extra_cols or []:
-        view[c] = res[c].values
-    view = view.sort_values("Gioco", key=lambda s: s.str.lower())
+    }).sort_values("Gioco", key=lambda s: s.str.lower())
     st.dataframe(view, hide_index=True, column_config={
         "Gioco": st.column_config.TextColumn("Gioco", pinned=True),
         "Ore": st.column_config.NumberColumn("⏱ Ore", format="%.0f", help="Storia principale, da HowLongToBeat"),
-        "FINAL": st.column_config.NumberColumn("⭐ FINAL", format="%.1f"),
-        "Giocato": st.column_config.CheckboxColumn("✅"),
         "HLTB": st.column_config.LinkColumn("HLTB", display_text="apri"),
     })
+
+
+def game_card(g, data):
+    """Scheda di un gioco: si apre toccando il titolo e ha tre sottoschede."""
+    label = g["titolo"] + (f" · ⏱ {fmt(g['ore_storia'], 0)} h" if not np.isnan(g["ore_storia"]) else "")
+    with st.expander(label):
+        info, durata, club = st.tabs(["📋 Info", "⏱ Durata", "🎮 Nel club"])
+        with info:
+            st.markdown(f"**Generi:** {', '.join(g['tags']) or '–'}")
+            st.markdown(f"**Piattaforme:** {', '.join(g['platforms']) or '–'}")
+            st.markdown(f"**Anno di uscita:** {g['anno'] or '–'}")
+        with durata:
+            rows = [(lbl, g[c]) for c, lbl in L.DURATE.items()]
+            if all(np.isnan(v) for _, v in rows):
+                st.write("Durata non disponibile.")
+            else:
+                for lbl, v in rows:
+                    st.markdown(f"**{lbl}:** {fmt(v, 0) + ' h' if not np.isnan(v) else '–'}")
+            link = g["hltb_url"] or hltb.search_url(g["titolo"])
+            st.markdown(f"[Apri su HowLongToBeat]({link})")
+        with club:
+            history = L.game_club_history(data, g["game_id"])
+            if not history:
+                st.write("Non è ancora stato proposto.")
+            for h in history:
+                line = f"**Periodo {h['numero']}** · proposto da {h['proponente']}"
+                if h["stato"] == "votazione":
+                    line += " · votazione in corso"
+                elif h["votanti"]:
+                    line += f" · {h['voti']} voti su {h['votanti']}"
+                line += " · ✅ scelto" if h["vinto"] else ""
+                st.markdown(line)
+                if h["vinto"]:
+                    v = h["valutazioni"]
+                    if v is None:
+                        st.caption("Nessuna valutazione ancora." if h["rivelato"] else "🔒 Valutazioni non ancora rivelate.")
+                    else:
+                        st.caption(f"FINAL medio {fmt(v['final'].mean())} su {len(v)} valutazioni")
+                        st.dataframe(v, hide_index=True, column_config={
+                            "membro": "Membro", "stato": "Stato",
+                            "final": st.column_config.NumberColumn("FINAL", format="%.1f"),
+                            "ore": st.column_config.NumberColumn("Ore", format="%.0f")})
+
+
+def games_view(res: pd.DataFrame, data, key: str):
+    """Elenco a schede (predefinito) oppure tabella."""
+    mode = st.segmented_control("Vista", ["Schede", "Tabella"], default="Schede", key=f"{key}_view",
+                                label_visibility="collapsed") or "Schede"
+    if mode == "Tabella":
+        st.caption("Tocca l'intestazione di una colonna per ordinare.")
+        games_table(res)
+        return
+    st.caption("Tocca un titolo per aprire la scheda del gioco.")
+    for _, g in res.sort_values("titolo", key=lambda s: s.str.lower()).iterrows():
+        game_card(g, data)
 
 
 def games_tab(full_data, me):
@@ -572,8 +620,8 @@ def games_tab(full_data, me):
                                 label_visibility="collapsed", key="cat_only") or "Tutti"
     if only != "Tutti":
         res = res[res["giocato"] == (only == "Già giocati")]
-    st.caption(f"{len(res)} giochi su {len(cat)}. Tocca l'intestazione di una colonna per ordinare.")
-    games_table(res)
+    st.caption(f"{len(res)} giochi su {len(cat)}")
+    games_view(res, data, "cat")
 
 
 # ================================================================ storico
@@ -972,8 +1020,8 @@ def admin_games(data):
     st.markdown("**Database dei giochi**")
     cat = L.games_catalog(data)
     res = filter_games(cat, "adm")
-    st.caption(f"{len(res)} giochi su {len(cat)}. Qui il FINAL include anche i voti non ancora rivelati.")
-    games_table(res)
+    st.caption(f"{len(res)} giochi su {len(cat)}. Nelle schede, qui vedi anche le valutazioni non ancora rivelate.")
+    games_view(res, data, "adm")
 
 
 def admin_tags(data):

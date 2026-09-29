@@ -476,3 +476,27 @@ def replace_tag(giochi: pd.DataFrame, column: str, old: str, new: str | None) ->
     df = giochi.copy()
     df[column] = df[column].map(fix)
     return df
+
+
+def game_club_history(data, game_id: str) -> list[dict]:
+    """Periodi in cui il gioco è stato proposto, con esito e (se visibili) i voti."""
+    p = periods(data)
+    p = p[(p["stato"] != "bozza") & p["opzioni"].map(lambda o: game_id in split_list(o))]
+    nm = name_map(data)
+    r = ratings(data)
+    out = []
+    for _, per in p.iterrows():
+        item = {"numero": per["numero"], "proponente": nm.get(per["proponente_id"], "?"), "stato": per["stato"],
+                "vinto": per["vincitore_id"] == game_id, "voti": None, "votanti": None, "valutazioni": None,
+                "rivelato": is_revealed(per)}
+        if per["stato"] != "votazione":
+            counts = vote_counts(data, per)
+            row = counts[counts["game_id"] == game_id]
+            item["voti"] = int(row["voti"].iloc[0]) if not row.empty else 0
+            item["votanti"] = len(period_votes(data, per))
+        if item["vinto"] and not r.empty:
+            pr = r[r["period_id"] == per["period_id"]]
+            if not pr.empty:
+                item["valutazioni"] = pr[["membro", "stato", "final", "ore"]].sort_values("final", ascending=False)
+        out.append(item)
+    return out
