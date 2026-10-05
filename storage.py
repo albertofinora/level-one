@@ -23,7 +23,7 @@ SCHEMA: dict[str, list[str]] = {
     "membri": ["member_id", "nome", "attivo"],
     "giochi": [
         "game_id", "titolo", "tag", "anno", "piattaforme",
-        "hltb_id", "hltb_url", "ore_storia", "ore_extra", "ore_completo",
+        "hltb_id", "hltb_url", "ore_storia", "ore_extra", "ore_completo", "sinossi",
     ],
     "periodi": ["period_id", "numero", "proponente_id", "data", "stato", "opzioni", "vincitore_id", "rivelato"],
     "pin": ["member_id", "pin_hash", "ts"],
@@ -32,7 +32,7 @@ SCHEMA: dict[str, list[str]] = {
     "valutazioni": [
         "period_id", "member_id", "game_id", "stato", "ore",
         "storia", "ambientazione", "gameplay", "audio", "longevita", "final",
-        "commento", "ts",
+        "commento", "ts", "ore_rif",
     ],
 }
 
@@ -77,6 +77,12 @@ class LocalStore:
             if not path.exists() or path.stat().st_size == 0:
                 with path.open("w", newline="", encoding="utf-8") as f:
                     csv.writer(f).writerow(cols)
+                continue
+            with path.open(newline="", encoding="utf-8") as f:
+                rows = list(csv.reader(f))
+            if rows and rows[0] != cols:
+                # File creato da una versione precedente: riscrive con le colonne nuove.
+                self.overwrite(table, _frame(table, rows))
 
     def _path(self, table: str) -> Path:
         return self.folder / f"{table}.csv"

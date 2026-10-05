@@ -8,17 +8,20 @@ Apri il link dell'app. Se non la usa nessuno da un po', compare una pagina che d
 
 **PIN dimenticato?** Chiedi all'admin di azzerarlo. Al prossimo accesso ne sceglierai uno nuovo.
 
+**Restare connessi.** Se ricarichi la pagina resti dentro per 30 minuti dall'ultima cosa che hai fatto. Dopo, ti chiede di nuovo il PIN.
+
 Se usi un telefono o un computer che non è tuo, premi **Esci** quando hai finito.
 
 ## Come funziona un periodo
 
 1. **Le proposte.** A turno, un membro propone fino a 5 giochi. Chi propone non vota.
 2. **La votazione.** Nella scheda **Proposte** spunta *tutti* i giochi che ti andrebbe di giocare, anche solo uno o anche tutti. Puoi cambiare le tue scelte finché la votazione è aperta. I risultati si vedono solo quando l'admin la chiude, così nessuno si fa influenzare.
-3. **L'hype.** Appena il gioco è scelto, nella scheda **In gioco** dai un voto da 1 a 10 a quanto ti ispira *prima di iniziare*. Il voto si blocca quando salvi la valutazione finale.
+3. **L'hype.** Appena il gioco è scelto, nella scheda **In gioco** dai un voto da 1 a 10 a quanto ti ispira. Meglio darlo prima di iniziare, ma puoi metterlo o cambiarlo quando vuoi finché il gioco è in corso, anche dopo la valutazione. L'hype di tutti è visibile subito, sotto il tuo, nella scheda **In gioco** e nello **Storico**.
 4. **La valutazione.** Quando hai finito il gioco, o quando lo molli, compila la valutazione nella scheda **In gioco**. Puoi modificarla finché l'admin non chiude il periodo.
 5. **La serata.** Fino alla serata in cui ne parliamo tutti insieme, ognuno vede solo i propri voti: gli altri restano nascosti 🔒, anche nelle statistiche. Alla serata l'admin li rivela e compaiono nello **Storico** e nelle **Statistiche**.
 
-Accanto ai giochi proposti può comparire un punto interrogativo: toccalo per vedere quanto *potresti* votarli, stimato in base ai voti che hai dato a giochi dello stesso genere.
+Sopra la votazione, nella sezione **Di cosa parlano?**, tocca un gioco per leggere una breve presentazione senza spoiler, con generi, piattaforme e link a HowLongToBeat, Steam (se esce su PC) e al trailer su YouTube.
+
 
 ## Il database dei giochi
 
@@ -32,7 +35,7 @@ In cima alla scheda ci sono i filtri, e la tabella sotto si aggiorna subito:
 - **Tutti / Già giocati / Mai giocati**.
 
 Sotto i filtri i giochi compaiono come **schede**: tocca un titolo per aprirla. Ogni scheda ha tre sottoschede:
-- **📋 Info**: generi, piattaforme e anno di uscita;
+- **📋 Info**: presentazione (se c'è), generi, piattaforme, anno di uscita e link utili;
 - **⏱ Durata**: storia principale, storia + extra, completista, e il link a HowLongToBeat;
 - **🎮 Nel club**: quando è stato proposto, quanti voti ha preso e, se è stato scelto, le valutazioni di tutti (una volta rivelate).
 
@@ -48,17 +51,25 @@ I voti vanno da 1 a 10, anche con il mezzo punto. Lascia **–** sulle categorie
 - **Ambientazione**: mondo, atmosfera, stile visivo.
 - **Gameplay**: quanto è bello da giocare.
 - **Audio**: musica, effetti, doppiaggio.
-- **Longevità**: la durata era giusta per questo gioco?.
+- **Longevità**: la durata era giusta per questo gioco? È un giudizio, non un conteggio: un gioco breve può meritare 10.
 - **FINAL**: il tuo voto complessivo, di pancia. Non deve essere la media delle altre categorie.
 - **Ore giocate**: quante ore ci hai passato davvero. È un dato, non un voto.
 
 E poi **come è andata**:
 
 - **Finito**: servono tutti i voti.
-- **Abbandonato**: basta il FINAL. Anche un abbandono dice molto su cosa ti piace.
+- **Abbandonato**: scrivi sempre le ore giocate. Poi decidi tu se votare o no:
+  - se voti, basta il FINAL. Il tuo voto conta nelle medie del gioco *in proporzione alle ore giocate* rispetto alla durata della storia principale su HowLongToBeat. Se hai giocato metà delle ore, il voto pesa la metà; oltre la durata della storia pesa per intero. Se HowLongToBeat non ha la durata, il riferimento è la media delle ore di chi nel club l'ha finito;
+  - se non voti, salviamo solo le ore.
+  Chi ha finito il gioco pesa sempre per intero, anche se ci ha messo più o meno ore del previsto.
 - **Non giocato**: nessun voto, e non conti nelle statistiche di quel gioco.
 
+Il **commento** è facoltativo, fino a 500 caratteri. Nello Storico e nelle schede dei giochi i commenti compaiono sotto la tabella dei voti, così si leggono per intero anche da telefono.
+
 ## Le statistiche
+
+**Abbandoni pesati o esclusi.** In Classifica, Generi, Proponenti, nella scheda Giochi e nello Storico trovi l'interruttore **Conta anche chi l'ha abbandonato**. Acceso (come parte l'app) usa i voti pesati sulle ore; spento mostra le medie solo di chi l'ha finito. La scelta vale per tutte le schede finché resti nell'app. Le statistiche dei singoli membri non sono pesate: lì conta il tuo giudizio.
+
 
 - **Classifica**: i giochi per FINAL medio. Puoi ordinarli anche per *divisività* (quanto il gruppo è spaccato) o per *gradimento normalizzato* (quanto un gioco è piaciuto rispetto al solito di chi l'ha votato; serve a pesare allo stesso modo chi dà sempre 8 e chi dà sempre 5).
 - **Membri**: le medie di ognuno per categoria, e il tuo profilo confrontato con quello del gruppo.

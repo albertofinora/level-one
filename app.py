@@ -23,6 +23,7 @@ st.set_page_config(page_title="Level One", page_icon="🎮", layout="centered")
 st.markdown(
     """<style>
     [data-testid="stMainBlockContainer"] {padding-top: 2.5rem; padding-bottom: 3rem;}
+    [data-testid="stElementContainer"]:has(.lo-cookie) {display: none;}
     </style>""",
     unsafe_allow_html=True,
 )
@@ -31,6 +32,8 @@ HERE = Path(__file__).parent
 SCALA = ["–"] + [f"{x / 2:g}" for x in range(2, 21)]  # –, 1, 1.5, … 10
 MAX_TENTATIVI = 5
 BLOCCO_SECONDI = 120
+SESSIONE_MINUTI = 30          # dopo quanto tempo di inattività bisogna rientrare col PIN
+COOKIE = "levelone_sessione"
 
 
 # ================================================================ dati
@@ -104,6 +107,133 @@ def num_cols(cols, dec: int = 1) -> dict:
 
 def empty_ratings_note():
     st.info("Le statistiche compaiono appena qualcuno valuta il primo gioco nella sezione **In gioco**.")
+
+
+def drops_toggle(where: str) -> bool:
+    """Interruttore "abbandoni pesati / solo chi l'ha finito", per tutti.
+
+    Compare in più schede: ogni copia ha la sua chiave, ma la scelta è una sola e resta
+    uguale ovunque (chiave condivisa "abbandoni_pesati")."""
+    key = f"abb_{where}"
+    st.session_state.setdefault("abbandoni_pesati", True)
+    st.session_state[key] = st.session_state["abbandoni_pesati"]
+
+    def sync():
+        st.session_state["abbandoni_pesati"] = st.session_state[key]
+
+    return st.toggle("Conta anche chi l'ha abbandonato", key=key, on_change=sync,
+                     help="Acceso: chi ha abbandonato conta in proporzione alle ore giocate rispetto alla storia "
+                          "principale. Spento: medie solo di chi l'ha finito.")
+
+
+def comments_list(df: pd.DataFrame, name_col: str = "membro"):
+    """Commenti in chiaro sotto le tabelle: su telefono le celle lunghe vengono tagliate."""
+    rows = df[df["commento"].fillna("").str.strip() != ""]
+    if rows.empty:
+        return
+    st.markdown("**Commenti**")
+    for _, r in rows.iterrows():
+        st.markdown(f"💬 **{r[name_col]}**: {r['commento'].strip()}")
+
+
+def weight_label(r) -> str:
+    if r["stato"] != "abbandonato" or np.isnan(r["final"]):
+        return ""
+    return f"{r['peso'] * 100:.0f}%"
+
+
+# ================================================================ sessione persistente
+# Streamlit dimentica tutto quando si ricarica la pagina. Per restare dentro salviamo
+# nel browser un cookie firmato (vedi logic.make_session_token) che vale SESSIONE_MINUTI
+# dall'ultima azione. Lo scriviamo con un pezzetto di JavaScript e lo rileggiamo con
+# st.context.cookies quando la pagina viene riaperta.
+
+def admin_expected() -> str | None:
+    expected = secret("admin_password")
+    if not expected and isinstance(get_store(), LocalStore):
+        return "admin"
+    return str(expected) if expected else None
+
+
+def session_key() -> str:
+    return pepper() or "solo-locale"
+
+
+def member_bind(data, member_id: str) -> str | None:
+    m = L.members(data)
+    row = m[(m["member_id"] == member_id) & m["attivo"]]
+    if row.empty or not row.iloc[0]["pin_impostato"]:
+        return None
+    return row.iloc[0]["pin_hash"]
+
+
+def session_bind(data, member_id: str, admin: bool) -> str | None:
+    parts = []
+    if member_id:
+        b = member_bind(data, member_id)
+        if b is None:
+            return None
+        parts.append(b)
+    if admin:
+        expected = admin_expected()
+        if not expected:
+            return None
+        parts.append(L.admin_bind(expected))
+    return "|".join(parts) if parts else None
+
+
+def read_cookie() -> str | None:
+    try:
+        return st.context.cookies.get(COOKIE)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def restore_session(data):
+    """Alla prima esecuzione dopo un ricaricamento: se c'è un cookie valido, rientra in automatico."""
+    if st.session_state.get("cookie_checked"):
+        return
+    st.session_state["cookie_checked"] = True
+    token = read_cookie()
+    if not token:
+        return
+    st.session_state["cookie_seen"] = True
+    parsed = L.parse_session_token(token)
+    if parsed is None:
+        return
+    member_id, admin, _, _ = parsed
+    bind = session_bind(data, member_id, admin)
+    if bind is None or not L.check_session_token(parsed, session_key(), bind):
+        return
+    if member_id:
+        st.session_state["member_id"] = member_id
+    if admin:
+        st.session_state["admin_ok"] = True
+
+
+def write_cookie(value: str, expires: str):
+    js = f"""<div class="lo-cookie"></div><script>
+    (function() {{
+      var secure = location.protocol === 'https:' ? '; Secure' : '';
+      document.cookie = '{COOKIE}={value}; Expires={expires}; Path=/; SameSite=Lax' + secure;
+    }})();
+    </script>"""
+    st.html(js, unsafe_allow_javascript=True)
+
+
+def sync_cookie(data):
+    """A ogni azione rinnova la scadenza del cookie; quando si esce lo cancella."""
+    member_id = st.session_state.get("member_id") or ""
+    admin = bool(st.session_state.get("admin_ok"))
+    bind = session_bind(data, member_id, admin) if (member_id or admin) else None
+    if bind is not None:
+        # Scadenza arrotondata al minuto: il cookie viene riscritto al massimo una volta al minuto.
+        exp = (int(time.time()) // 60 + SESSIONE_MINUTI + 1) * 60
+        token = L.make_session_token(member_id, admin, exp, session_key(), bind)
+        write_cookie(token, time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(exp)))
+        st.session_state["cookie_seen"] = True
+    elif st.session_state.get("cookie_seen"):
+        write_cookie("", "Thu, 01 Jan 1970 00:00:00 GMT")
 
 
 # ================================================================ accesso
@@ -194,10 +324,9 @@ def proposals_tab(data, me: str):
         n_voted = len(L.period_votes(data, per))
         st.caption(f"Hanno votato {n_voted} su {len(voters)}. I risultati si vedono quando l'admin chiude la votazione.")
 
+        games_intro(data, options)
         if per["proponente_id"] == me:
             st.info("Sei tu il proponente di questo periodo, quindi non voti.")
-            for g in options:
-                st.write(f"• {gm.get(g, g)}")
             continue
 
         previous = L.my_vote(data, per["period_id"], me)
@@ -208,10 +337,8 @@ def proposals_tab(data, me: str):
             st.write("Spunta **tutti** i giochi che ti andrebbe di giocare.")
             picks = []
             for g in options:
-                est, why = L.predict(data, g, me)
-                help_text = None if np.isnan(est) else f"Stima del tuo voto: {fmt(est)} ({why})"
                 label = gm.get(g, g) + (f" · ⏱ {fmt(durs[g], 0)} h" if g in durs else "")
-                if st.checkbox(label, value=bool(previous and g in previous), key=f"v_{per['period_id']}_{g}", help=help_text):
+                if st.checkbox(label, value=bool(previous and g in previous), key=f"v_{per['period_id']}_{g}"):
                     picks.append(g)
             ok = st.form_submit_button("Salva il mio voto", type="primary", width="stretch")
         if ok and save_append(
@@ -220,6 +347,24 @@ def proposals_tab(data, me: str):
         ):
             st.toast("Voto salvato")
             st.rerun()
+
+
+def games_intro(data, options: list[str]):
+    """Un riquadro apribile per ogni gioco proposto: sinossi, generi, durata e link."""
+    cat = L.games_catalog(data).set_index("game_id")
+    st.markdown("**Di cosa parlano?**")
+    for g in options:
+        if g not in cat.index:
+            continue
+        row = cat.loc[g]
+        hours = f" · ⏱ {fmt(row['ore_storia'], 0)} h" if not np.isnan(row["ore_storia"]) else ""
+        with st.expander(row["titolo"] + hours):
+            if row["sinossi"].strip():
+                st.write(row["sinossi"].strip())
+            details = [x for x in [", ".join(row["tags"]), ", ".join(row["platforms"]), str(row["anno"] or "")] if x]
+            if details:
+                st.caption(" · ".join(details))
+            st.markdown("🔗 " + links_line(row["titolo"], row["hltb_url"], row["platforms"]))
 
 
 # ================================================================ gioco in corso
@@ -241,17 +386,17 @@ def playing_tab(data, me: str):
         n_rated = len(L.latest(data["valutazioni"], ["period_id", "member_id"]).query("period_id == @pid"))
         n_active = int(L.members(data)["attivo"].sum())
         st.caption(f"Hanno valutato {n_rated} su {n_active}. I voti di tutti si vedranno alla serata, quando l'admin li rivela.")
-        hype_section(data, pid, me, locked_by_rating=rated is not None)
+        hype_section(data, pid, me)
+        group_hype(data, pid)
         st.divider()
         rating_section(data, per, me, rated)
 
 
-def hype_section(data, pid: str, me: str, locked_by_rating: bool):
+def hype_section(data, pid: str, me: str):
     current = L.my_hype(data, pid, me)
-    st.markdown("**Prima di iniziare: quanto ti ispira?**")
-    if locked_by_rating:
-        st.caption(f"Il tuo hype: {fmt(current)}. Si blocca dopo che hai valutato il gioco.")
-        return
+    st.markdown("**Hype: quanto ti ispira?**")
+    st.caption("Meglio darlo prima di iniziare, ma puoi metterlo o cambiarlo quando vuoi finché il gioco è in corso."
+               + ("" if current is None or np.isnan(current) else f" Il tuo hype attuale: {fmt(current)}."))
     with st.form(f"hype_{pid}"):
         value = st.select_slider(
             "Hype (1–10)", options=SCALA[1:], value=SCALA[1:][9] if current is None or np.isnan(current) else f"{current:g}"
@@ -260,6 +405,15 @@ def hype_section(data, pid: str, me: str, locked_by_rating: bool):
     if ok and save_append("hype", {"period_id": pid, "member_id": me, "voto": value, "ts": now_ts()}):
         st.toast("Hype salvato")
         st.rerun()
+
+
+def group_hype(data, pid: str):
+    """L'hype di tutti: visibile appena il gioco è stato scelto."""
+    h = L.period_hype(data, pid)
+    if h.empty:
+        return
+    st.caption(f"Hype del club: media {fmt(h['voto'].mean())} su {len(h)} · "
+               + " · ".join(f"{m} {fmt(v)}" for m, v in zip(h["membro"], h["voto"])))
 
 
 def rating_section(data, per, me: str, prev):
@@ -274,21 +428,39 @@ def rating_section(data, per, me: str, prev):
         v = L.to_num(prev[col])
         return "–" if np.isnan(v) else f"{v:g}"
 
+    # Fuori dal modulo, così il resto della pagina si adatta subito alla scelta.
+    stato_prev = prev["stato"] if prev is not None and prev["stato"] in L.STATI_GIOCO else "finito"
+    stato = st.radio("Come è andata?", L.STATI_GIOCO, index=L.STATI_GIOCO.index(stato_prev), horizontal=True,
+                     format_func=str.capitalize, key=f"stato_{pid}")
+    vota = stato == "finito"
+    ref = L.durations(data).get(gid)
+    if stato == "abbandonato":
+        no_vote_before = prev is not None and prev["stato"] == "abbandonato" and np.isnan(L.to_num(prev["final"]))
+        vota = st.toggle("Voglio dare comunque il mio voto", value=not no_vote_before, key=f"vota_{pid}")
+        if vota:
+            base = (f"le {fmt(ref, 0)} ore della storia principale (HowLongToBeat)" if ref
+                    else "la media delle ore di chi nel club l'ha finito")
+            st.caption(f"Il tuo voto conterà nelle medie del gioco in proporzione alle ore giocate rispetto a {base}. "
+                       "Esempio: metà delle ore = voto che pesa la metà.")
+        else:
+            st.caption("Salviamo solo le ore giocate: il tuo voto non entra nelle medie.")
+
     with st.form(f"val_{pid}"):
-        stato_prev = prev["stato"] if prev is not None and prev["stato"] in L.STATI_GIOCO else "finito"
-        stato = st.radio("Come è andata?", L.STATI_GIOCO, index=L.STATI_GIOCO.index(stato_prev), horizontal=True,
-                         format_func=str.capitalize)
-        ore_prev = L.to_num(prev["ore"]) if prev is not None else np.nan
-        ore = st.number_input("Ore giocate", min_value=0.0, max_value=1000.0, step=0.5,
-                              value=None if np.isnan(ore_prev) else ore_prev, placeholder="Circa quante?")
-        st.caption("Voti da 1 a 10. Lascia “–” per le categorie che non vuoi o non puoi valutare.")
-        scores = {}
-        for c in L.CATEGORIE:
-            scores[c] = st.select_slider(L.ETICHETTE[c], options=SCALA, value=prev_val(c), key=f"{pid}_{c}")
-        scores["final"] = st.select_slider("FINAL: il tuo voto complessivo, di pancia", options=SCALA,
-                                           value=prev_val("final"), key=f"{pid}_final")
-        commento = st.text_input("Commento (facoltativo)", value=prev["commento"] if prev is not None else "",
-                                 max_chars=500)
+        ore = None
+        if stato != "non giocato":
+            ore_prev = L.to_num(prev["ore"]) if prev is not None else np.nan
+            ore = st.number_input("Ore giocate" + (" (obbligatorio)" if stato == "abbandonato" else ""),
+                                  min_value=0.0, max_value=1000.0, step=0.5,
+                                  value=None if np.isnan(ore_prev) else ore_prev, placeholder="Circa quante?")
+        scores = {k: "–" for k in L.CATEGORIE + ["final"]}
+        if vota:
+            st.caption("Voti da 1 a 10. Lascia “–” per le categorie che non vuoi o non puoi valutare.")
+            for c in L.CATEGORIE:
+                scores[c] = st.select_slider(L.ETICHETTE[c], options=SCALA, value=prev_val(c), key=f"{pid}_{c}")
+            scores["final"] = st.select_slider("FINAL: il tuo voto complessivo, di pancia", options=SCALA,
+                                               value=prev_val("final"), key=f"{pid}_final")
+        commento = st.text_area("Commento (facoltativo)", value=prev["commento"] if prev is not None else "",
+                                max_chars=500, height=90)
         ok = st.form_submit_button("Salva valutazione", type="primary", width="stretch")
 
     if not ok:
@@ -296,13 +468,15 @@ def rating_section(data, per, me: str, prev):
     if stato == "finito" and "–" in scores.values():
         st.error("Se l'hai finito, dai un voto a tutte le categorie e al FINAL.")
         return
-    if stato == "abbandonato" and scores["final"] == "–":
-        st.error("Anche se l'hai abbandonato, serve almeno il FINAL.")
+    if stato == "abbandonato" and ore is None:
+        st.error("Se l'hai abbandonato, scrivi circa quante ore hai giocato: servono per pesare il voto.")
         return
-    if stato == "non giocato":
-        scores = {k: "–" for k in scores}
+    if stato == "abbandonato" and vota and scores["final"] == "–":
+        st.error("Se vuoi votare, serve almeno il FINAL.")
+        return
     row = {"period_id": pid, "member_id": me, "game_id": gid, "stato": stato,
-           "ore": "" if ore is None else f"{ore:g}", "commento": commento.strip(), "ts": now_ts()}
+           "ore": "" if ore is None else f"{ore:g}", "commento": commento.strip(), "ts": now_ts(),
+           "ore_rif": "" if not ref else f"{ref:g}"}
     row.update({k: "" if v == "–" else v for k, v in scores.items()})
     if save_append("valutazioni", row):
         st.toast("Valutazione salvata")
@@ -326,6 +500,8 @@ def stats_tab(full_data, me: str):
     if L.ratings(data).empty and section not in ("Desiderati", "Proponenti"):
         empty_ratings_note()
         return
+    if section in ("Classifica", "Generi", "Proponenti"):
+        st.session_state["_pesati"] = drops_toggle("stats")
     {
         "Classifica": stats_ranking,
         "Membri": stats_members,
@@ -338,7 +514,10 @@ def stats_tab(full_data, me: str):
 
 
 def stats_ranking(data, me):
-    gs = L.game_summary(data)
+    gs = L.game_summary(data, st.session_state.get("_pesati", True))
+    if gs.empty:
+        st.info("Nessun gioco ha valutazioni con questo filtro.")
+        return
     order = st.radio("Ordina per", ["FINAL medio", "Più divisivi", "Gradimento normalizzato"], horizontal=True)
     key = {"FINAL medio": "final_medio", "Più divisivi": "divisivita", "Gradimento normalizzato": "gradimento_normalizzato"}[order]
     gs = gs.sort_values(key, ascending=False)
@@ -437,7 +616,7 @@ def heatmap(df, x, y, value, domain=(1, 10), fmt_str=".1f"):
 
 
 def stats_tags(data, me):
-    ts = L.tag_summary(data)
+    ts = L.tag_summary(data, st.session_state.get("_pesati", True))
     st.dataframe(ts, hide_index=True, column_config={
         "tag": "Genere", "final_medio": st.column_config.NumberColumn("FINAL medio", format="%.1f"),
         "giochi": "Giochi", "abbandoni": "Abbandoni"})
@@ -487,7 +666,7 @@ def stats_affinity(data, me):
 
 
 def stats_proposers(data, me):
-    ps = L.proposer_stats(data)
+    ps = L.proposer_stats(data, st.session_state.get("_pesati", True))
     if ps.empty:
         st.info("Le statistiche dei proponenti compaiono dopo la prima votazione chiusa.")
         return
@@ -554,15 +733,22 @@ def games_table(res: pd.DataFrame):
     })
 
 
-def game_card(g, data):
+def links_line(title: str, hltb_url: str, platforms) -> str:
+    return " · ".join(f"[{lbl}]({url})" for lbl, url in L.game_links(title, hltb_url, list(platforms or [])))
+
+
+def game_card(g, data, pesati: bool = True):
     """Scheda di un gioco: si apre toccando il titolo e ha tre sottoschede."""
     label = g["titolo"] + (f" · ⏱ {fmt(g['ore_storia'], 0)} h" if not np.isnan(g["ore_storia"]) else "")
     with st.expander(label):
         info, durata, club = st.tabs(["📋 Info", "⏱ Durata", "🎮 Nel club"])
         with info:
+            if g["sinossi"].strip():
+                st.write(g["sinossi"].strip())
             st.markdown(f"**Generi:** {', '.join(g['tags']) or '–'}")
             st.markdown(f"**Piattaforme:** {', '.join(g['platforms']) or '–'}")
             st.markdown(f"**Anno di uscita:** {g['anno'] or '–'}")
+            st.markdown("🔗 " + links_line(g["titolo"], g["hltb_url"], g["platforms"]))
         with durata:
             rows = [(lbl, g[c]) for c, lbl in L.DURATE.items()]
             if all(np.isnan(v) for _, v in rows):
@@ -573,7 +759,7 @@ def game_card(g, data):
             link = g["hltb_url"] or hltb.search_url(g["titolo"])
             st.markdown(f"[Apri su HowLongToBeat]({link})")
         with club:
-            history = L.game_club_history(data, g["game_id"])
+            history = L.game_club_history(data, g["game_id"], pesati)
             if not history:
                 st.write("Non è ancora stato proposto.")
             for h in history:
@@ -589,14 +775,18 @@ def game_card(g, data):
                     if v is None:
                         st.caption("Nessuna valutazione ancora." if h["rivelato"] else "🔒 Valutazioni non ancora rivelate.")
                     else:
-                        st.caption(f"FINAL medio {fmt(v['final'].mean())} su {len(v)} valutazioni")
-                        st.dataframe(v, hide_index=True, column_config={
+                        st.caption(f"FINAL medio {fmt(h['final_medio'])} su {int(v['final'].notna().sum())} voti"
+                                   + ("" if pesati else " (solo chi l'ha finito)"))
+                        show = v.assign(peso=v.apply(weight_label, axis=1))
+                        st.dataframe(show[["membro", "stato", "final", "ore", "peso"]], hide_index=True, column_config={
                             "membro": "Membro", "stato": "Stato",
                             "final": st.column_config.NumberColumn("FINAL", format="%.1f"),
-                            "ore": st.column_config.NumberColumn("Ore", format="%.0f")})
+                            "ore": st.column_config.NumberColumn("Ore", format="%.0f"),
+                            "peso": st.column_config.TextColumn("Peso", help="Solo per chi ha abbandonato")})
+                        comments_list(v)
 
 
-def games_view(res: pd.DataFrame, data, key: str):
+def games_view(res: pd.DataFrame, data, key: str, pesati: bool = True):
     """Elenco a schede (predefinito) oppure tabella."""
     mode = st.segmented_control("Vista", ["Schede", "Tabella"], default="Schede", key=f"{key}_view",
                                 label_visibility="collapsed") or "Schede"
@@ -606,12 +796,13 @@ def games_view(res: pd.DataFrame, data, key: str):
         return
     st.caption("Tocca un titolo per aprire la scheda del gioco.")
     for _, g in res.sort_values("titolo", key=lambda s: s.str.lower()).iterrows():
-        game_card(g, data)
+        game_card(g, data, pesati)
 
 
 def games_tab(full_data, me):
     data = L.visible_data(full_data)
-    cat = L.games_catalog(data)
+    pesati = drops_toggle("games")
+    cat = L.games_catalog(data, pesati)
     if cat.empty:
         st.info("Il database dei giochi è ancora vuoto.")
         return
@@ -621,7 +812,7 @@ def games_tab(full_data, me):
     if only != "Tutti":
         res = res[res["giocato"] == (only == "Già giocati")]
     st.caption(f"{len(res)} giochi su {len(cat)}")
-    games_view(res, data, "cat")
+    games_view(res, data, "cat", pesati)
 
 
 # ================================================================ storico
@@ -633,12 +824,14 @@ def history_tab(data, me):
         st.info("Lo storico si riempie man mano che i periodi vengono votati.")
         return
     gm, nm = L.game_map(data), L.name_map(data)
-    r = L.ratings(L.visible_data(data))
+    vis = L.visible_data(data)
+    r = L.ratings(vis)
+    pesati = drops_toggle("history") if not r.empty else True
     for _, per in p.iterrows():
         winner = gm.get(per["vincitore_id"], "da decidere")
         pr = r[r["period_id"] == per["period_id"]]
         revealed = L.is_revealed(per)
-        avg = fmt(pr["final"].mean()) if not pr.empty else "–"
+        avg = fmt(L.final_average(pr, pesati)) if not pr.empty else "–"
         if per["stato"] == "votazione":
             title = f"#{per['numero']} · votazione in corso"
         else:
@@ -646,6 +839,10 @@ def history_tab(data, me):
         with st.expander(title):
             st.caption(f"{L.ETICHETTE_STATO.get(per['stato'], per['stato'])} · proposto da {nm.get(per['proponente_id'], '?')}"
                        + (f" · {fmt_date(per['data'])}" if per["data"] else ""))
+            ph = L.period_hype(vis, per["period_id"])
+            if not ph.empty:
+                st.caption(f"Hype medio {fmt(ph['voto'].mean())} su {len(ph)} · "
+                           + " · ".join(f"{m} {fmt(v)}" for m, v in zip(ph["membro"], ph["voto"])))
             if per["stato"] == "votazione":
                 st.write("Votazione in corso: i risultati si vedono alla chiusura.")
             else:
@@ -654,10 +851,12 @@ def history_tab(data, me):
             if per["stato"] in ("in_gioco", "chiuso") and not revealed:
                 st.write("🔒 Le valutazioni verranno rivelate dall'admin alla serata.")
             if not pr.empty:
-                show = pr[["membro", "stato", "final", "ore", "commento"]].sort_values("final", ascending=False)
-                st.dataframe(show, hide_index=True, column_config={
+                show = pr.assign(peso=pr.apply(weight_label, axis=1)).sort_values("final", ascending=False)
+                st.dataframe(show[["membro", "stato", "final", "ore", "peso"]], hide_index=True, column_config={
                     "membro": "Membro", "stato": "Stato", "final": st.column_config.NumberColumn("FINAL", format="%.1f"),
-                    "ore": st.column_config.NumberColumn("Ore", format="%.0f"), "commento": "Commento"})
+                    "ore": st.column_config.NumberColumn("Ore", format="%.0f"),
+                    "peso": st.column_config.TextColumn("Peso", help="Solo per chi ha abbandonato")})
+                comments_list(show)
 
 
 # ================================================================ guida
@@ -676,14 +875,12 @@ def admin_gate(data):
             st.rerun()
         admin_panel(data)
         return
-    expected = secret("admin_password")
+    expected = admin_expected()
     if not expected:
-        if isinstance(get_store(), LocalStore):
-            expected = "admin"
-            st.caption("Modalità locale: la password admin è “admin”.")
-        else:
-            st.error("Manca `admin_password` nei secrets dell'app.")
-            return
+        st.error("Manca `admin_password` nei secrets dell'app.")
+        return
+    if not secret("admin_password"):
+        st.caption("Modalità locale: la password admin è “admin”.")
     if locked():
         return
     with st.form("admin_login"):
@@ -854,17 +1051,22 @@ def admin_ratings_table(data, per):
                         "Hype": rows["member_id"].map(hype).astype(float).values})
     for c in ["final"] + L.CATEGORIE + ["ore"]:
         tab[L.ETICHETTE[c]] = rows[c].map(L.to_num).astype(float).values
-    tab["Commento"] = rows["commento"].values
+    weights = L.ratings(data).set_index(["period_id", "member_id"])["peso"]
+    tab["Peso"] = [f"{weights.get((pid, m), 1) * 100:.0f}%" if s == "abbandonato" and not np.isnan(L.to_num(f)) else ""
+                   for m, s, f in zip(rows["member_id"], rows["stato"], rows["final"])]
+    tab["commento"] = rows["commento"].values
     label = f"Valutazioni di ogni membro ({len(tab)})"
     if not L.is_revealed(per):
         label += " · solo admin"
     with st.expander(label):
         numeric = ["Hype", "FINAL"] + [L.ETICHETTE[c] for c in L.CATEGORIE]
-        st.dataframe(tab.sort_values("FINAL", ascending=False), hide_index=True,
+        tab = tab.sort_values("FINAL", ascending=False)
+        st.dataframe(tab.drop(columns="commento"), hide_index=True,
                      column_config={**num_cols(numeric), "Ore": st.column_config.NumberColumn(format="%.0f")})
+        comments_list(tab, name_col="Membro")
 
 
-GAME_FIELDS = ["titolo", "tag", "anno", "piatt", "ore_storia", "ore_extra", "ore_completo", "hltb_url", "hltb_id"]
+GAME_FIELDS = ["titolo", "tag", "anno", "piatt", "ore_storia", "ore_extra", "ore_completo", "hltb_url", "hltb_id", "sinossi"]
 
 
 def _gkey(prefix: str, field: str) -> str:
@@ -887,8 +1089,8 @@ def init_game_fields(prefix: str, row=None):
     st.session_state[_gkey(prefix, "tag")] = L.split_list(get("tag"))
     st.session_state[_gkey(prefix, "anno")] = get("anno")
     st.session_state[_gkey(prefix, "piatt")] = L.split_multi(get("piattaforme"))
-    for c in ["ore_storia", "ore_extra", "ore_completo", "hltb_url", "hltb_id"]:
-        st.session_state[_gkey(prefix, c)] = get(c)
+    for c in ["ore_storia", "ore_extra", "ore_completo", "hltb_url", "hltb_id", "sinossi"]:
+        st.session_state[_gkey(prefix, c)] = get(c) if get(c) != "nan" else ""
 
 
 def reset_game_fields(prefix: str):
@@ -953,6 +1155,9 @@ def game_form(data, prefix: str, submit_label: str):
         ms("Generi", tags, accept_new_options=True, key=_gkey(prefix, "tag"), help="Puoi scriverne di nuovi.")
         ms("Piattaforme", plats, accept_new_options=True, key=_gkey(prefix, "piatt"))
         st.text_input("Anno di uscita", key=_gkey(prefix, "anno"))
+        st.text_area("Sinossi (senza spoiler)", key=_gkey(prefix, "sinossi"), max_chars=800, height=120,
+                     help="Due o tre frasi per far capire agli altri di che gioco si tratta. Compare quando il gioco "
+                          "viene proposto e nella sua scheda.")
         st.caption("Durata in ore (da HowLongToBeat o a mano). Lascia vuoto se non la conosci.")
         c1, c2, c3 = st.columns(3)
         c1.text_input("Storia", key=_gkey(prefix, "ore_storia"))
@@ -976,7 +1181,7 @@ def game_form(data, prefix: str, submit_label: str):
         return None
     return {"titolo": v["titolo"].strip(), "tag": L.join_list(v["tag"] or []), "anno": str(v["anno"] or "").strip(),
             "piattaforme": L.join_list(v["piatt"] or []), "hltb_url": str(v["hltb_url"] or "").strip(),
-            "hltb_id": str(v["hltb_id"] or "").strip(), **hours}
+            "hltb_id": str(v["hltb_id"] or "").strip(), "sinossi": str(v["sinossi"] or "").strip(), **hours}
 
 
 def admin_games(data):
@@ -1187,11 +1392,13 @@ def main():
         st.error(f"Impossibile leggere i dati. Controlla la configurazione (vedi guida admin). Dettaglio: {exc}")
         st.stop()
 
+    restore_session(data)
     me = st.session_state.get("member_id")
     nm = L.name_map(data)
     if me not in nm:
         st.session_state.pop("member_id", None)
         login_view(data)
+        sync_cookie(data)
         return
 
     st.markdown("## 🎮 Level One")
@@ -1214,10 +1421,11 @@ def main():
         admin_gate(data)
 
     st.divider()
+    st.caption(f"Resti connesso per {SESSIONE_MINUTI} minuti dall'ultima azione, anche se ricarichi la pagina.")
     if st.button(f"Esci ({nm[me]})", type="tertiary"):
         st.session_state.pop("member_id", None)
         st.session_state["admin_ok"] = False
         st.rerun()
-
+    sync_cookie(data)
 
 main()

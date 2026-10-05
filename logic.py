@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import base64
 import itertools
 import os
+import time
+from urllib.parse import quote_plus
 
 import numpy as np
 import pandas as pd
@@ -80,6 +83,43 @@ def valid_pin(pin: str) -> bool:
     return len(pin) == 4 and pin.isdigit()
 
 
+# ---------------------------------------------------------------- sessione (cookie)
+# Il cookie contiene: chi sei, se sei entrato come admin e la scadenza, più una firma.
+# La firma dipende anche dal PIN attuale (e dalla password admin): se l'admin azzera
+# un PIN, i cookie di quella persona smettono di valere.
+
+def _session_sig(member_id: str, admin: bool, exp: int, key: str, bind: str) -> str:
+    msg = f"{member_id}|{int(admin)}|{exp}|{bind}".encode()
+    return hmac.new(("levelone-session|" + key).encode(), msg, hashlib.sha256).hexdigest()[:40]
+
+
+def make_session_token(member_id: str, admin: bool, exp: int, key: str, bind: str) -> str:
+    payload = base64.urlsafe_b64encode(f"{member_id}|{int(admin)}|{exp}".encode()).decode().rstrip("=")
+    return f"{payload}.{_session_sig(member_id, admin, exp, key, bind)}"
+
+
+def parse_session_token(token: str) -> tuple[str, bool, int, str] | None:
+    """(member_id, admin, scadenza, firma) senza verificare nulla: la verifica la fa check_session_token."""
+    try:
+        payload, sig = str(token).split(".")
+        raw = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode()
+        member_id, admin, exp = raw.split("|")
+        return member_id, admin == "1", int(exp), sig
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def check_session_token(parsed, key: str, bind: str, now: float | None = None) -> bool:
+    member_id, admin, exp, sig = parsed
+    if exp < (time.time() if now is None else now):
+        return False
+    return hmac.compare_digest(sig, _session_sig(member_id, admin, exp, key, bind))
+
+
+def admin_bind(password: str) -> str:
+    return hashlib.sha256(("admin|" + str(password)).encode()).hexdigest()
+
+
 # ---------------------------------------------------------------- tabelle base
 
 def latest(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
@@ -136,6 +176,19 @@ def durations(data) -> dict[str, float]:
     return {k: v for k, v in out.items() if not np.isnan(v)}
 
 
+def game_links(title: str, hltb_url: str = "", platforms: list[str] | None = None) -> list[tuple[str, str]]:
+    """Link utili per farsi un'idea di un gioco, senza spoiler: HLTB, Steam (se esce su PC), trailer."""
+    links = []
+    if str(hltb_url or "").strip():
+        links.append(("HowLongToBeat", str(hltb_url).strip()))
+    else:
+        links.append(("HowLongToBeat", "https://www.google.com/search?q=" + quote_plus(f"site:howlongtobeat.com {title}")))
+    if not platforms or "PC" in platforms:
+        links.append(("Steam", "https://store.steampowered.com/search/?term=" + quote_plus(title)))
+    links.append(("Trailer su YouTube", "https://www.youtube.com/results?search_query=" + quote_plus(f"{title} trailer")))
+    return links
+
+
 def periods(data) -> pd.DataFrame:
     p = data["periodi"].copy()
     p["numero_n"] = p["numero"].map(to_num).astype(float)
@@ -158,11 +211,19 @@ def hidden_period_ids(data) -> set[str]:
 
 
 def visible_data(data) -> dict:
-    """I dati come li vedono i membri: senza valutazioni e hype dei periodi non ancora rivelati."""
+    """I dati come li vedono i membri.
+
+    Le valutazioni restano nascoste finché l'admin non le rivela alla serata. L'hype invece
+    è visibile a tutti appena il periodo ha un vincitore (cioè da "In gioco" in poi).
+    """
     hidden = hidden_period_ids(data)
+    p = data["periodi"]
+    with_winner = set(p.loc[p["stato"].isin(["in_gioco", "chiuso"]), "period_id"])
     out = dict(data)
-    for table in ("valutazioni", "hype"):
-        out[table] = data[table][~data[table]["period_id"].isin(hidden)].reset_index(drop=True)
+    v = data["valutazioni"]
+    out["valutazioni"] = v[~v["period_id"].isin(hidden)].reset_index(drop=True)
+    h = data["hype"]
+    out["hype"] = h[h["period_id"].isin(with_winner)].reset_index(drop=True)
     return out
 
 
@@ -220,7 +281,14 @@ def leaders(counts: pd.DataFrame) -> list[str]:
 # ---------------------------------------------------------------- valutazioni
 
 def ratings(data) -> pd.DataFrame:
-    """Ultima valutazione di ciascun membro per ciascun periodo, con i numeri convertiti."""
+    """Ultima valutazione di ciascun membro per ciascun periodo, con i numeri convertiti.
+
+    Aggiunge anche:
+    - ore_rif: ore della storia principale usate come riferimento per chi abbandona
+      (quelle salvate al momento del voto, altrimenti quelle HLTB attuali, altrimenti la
+      media delle ore di chi nel club l'ha finito);
+    - peso: 1 per chi l'ha finito; per chi l'ha abbandonato, ore giocate ÷ ore_rif (massimo 1).
+    """
     r = latest(data["valutazioni"], ["period_id", "member_id"]).copy()
     for c in CATEGORIE + ["final", "ore"]:
         r[c] = r[c].map(to_num).astype(float)
@@ -231,7 +299,48 @@ def ratings(data) -> pd.DataFrame:
     r["gioco"] = r["game_id"].map(gm)
     # Scarto dalla media personale: quanto un voto è sopra/sotto il solito di quella persona.
     r["scarto_personale"] = r["final"] - r.groupby("member_id")["final"].transform("mean")
+
+    hltb_hours = durations(data)
+    snap = r["ore_rif"].map(to_num).astype(float) if "ore_rif" in r else pd.Series(np.nan, index=r.index)
+    ref = snap.where(snap > 0, r["game_id"].map(hltb_hours).astype(float))
+    finishers = r[(r["stato"] == "finito") & (r["ore"] > 0)].groupby("period_id")["ore"].mean()
+    ref = ref.where(ref > 0, r["period_id"].map(finishers).astype(float))
+    r["ore_rif"] = ref
+    ratio = (r["ore"] / ref).clip(upper=1)
+    r["peso"] = np.where((r["stato"] == "abbandonato") & ratio.notna(), ratio, 1.0)
     return r.reset_index(drop=True)
+
+
+def game_ratings(data, pesati: bool = True) -> pd.DataFrame:
+    """Valutazioni per le medie dei giochi: con gli abbandoni pesati, oppure solo chi l'ha finito."""
+    r = ratings(data)
+    if not pesati:
+        r = r[r["stato"] != "abbandonato"].copy()
+        r["peso"] = 1.0
+    return r
+
+
+def wmean(values: pd.Series, weights: pd.Series) -> float:
+    ok = values.notna() & weights.notna() & (weights > 0)
+    return float(np.average(values[ok], weights=weights[ok])) if ok.any() else np.nan
+
+
+def wstd(values: pd.Series, weights: pd.Series) -> float:
+    ok = values.notna() & weights.notna() & (weights > 0)
+    if not ok.any():
+        return np.nan
+    m = np.average(values[ok], weights=weights[ok])
+    return float(np.sqrt(np.average((values[ok] - m) ** 2, weights=weights[ok])))
+
+
+def final_average(r: pd.DataFrame, pesati: bool = True) -> float:
+    """FINAL medio di un insieme di valutazioni (di solito un periodo)."""
+    if r.empty:
+        return np.nan
+    if not pesati:
+        r = r[r["stato"] != "abbandonato"]
+        return float(r["final"].mean()) if not r.empty else np.nan
+    return wmean(r["final"], r["peso"])
 
 
 def my_rating(data, period_id: str, member_id: str) -> pd.Series | None:
@@ -246,6 +355,14 @@ def hype_table(data) -> pd.DataFrame:
     return h
 
 
+def period_hype(data, period_id: str) -> pd.DataFrame:
+    """Hype di ciascun membro per un periodo (membro, voto), dal più alto."""
+    h = hype_table(data)
+    h = h[(h["period_id"] == period_id) & h["voto"].notna()].copy()
+    h["membro"] = h["member_id"].map(name_map(data))
+    return h[["membro", "voto"]].sort_values("voto", ascending=False).reset_index(drop=True)
+
+
 def my_hype(data, period_id: str, member_id: str) -> float | None:
     h = data["hype"]
     h = h[(h["period_id"] == period_id) & (h["member_id"] == member_id)]
@@ -254,24 +371,33 @@ def my_hype(data, period_id: str, member_id: str) -> float | None:
 
 # ---------------------------------------------------------------- statistiche
 
-def game_summary(data) -> pd.DataFrame:
-    r = ratings(data)
-    if r.empty:
+def game_summary(data, pesati: bool = True) -> pd.DataFrame:
+    """Medie per gioco. pesati=True: chi ha abbandonato conta in proporzione alle ore giocate."""
+    all_r = ratings(data)
+    if all_r.empty:
         return pd.DataFrame()
-    g = r.groupby(["game_id", "gioco"])
-    out = pd.DataFrame(
-        {
-            "valutazioni": g["member_id"].count(),
-            "final_medio": g["final"].mean(),
-            "media_categorie": g["media_categorie"].mean(),
-            "divisivita": g["final"].std(ddof=0),
-            "gradimento_normalizzato": g["scarto_personale"].mean(),
-            "abbandoni": g["stato"].apply(lambda s: int((s == "abbandonato").sum())),
-            "ore_medie": g["ore"].mean(),
+    drops = all_r[all_r["stato"] == "abbandonato"].groupby("game_id").size()
+    r = game_ratings(data, pesati)
+    rows = []
+    for (gid, gioco), grp in r.groupby(["game_id", "gioco"]):
+        w = grp["peso"]
+        row = {
+            "game_id": gid,
+            "gioco": gioco,
+            "valutazioni": int(grp["final"].notna().sum()),
+            "final_medio": wmean(grp["final"], w),
+            "media_categorie": wmean(grp["media_categorie"], w),
+            "divisivita": wstd(grp["final"], w),
+            "gradimento_normalizzato": wmean(grp["scarto_personale"], w),
+            "abbandoni": int(drops.get(gid, 0)),
+            "ore_medie": grp["ore"].mean(),
         }
-    ).reset_index()
-    for c in CATEGORIE:
-        out[c] = g[c].mean().values
+        for c in CATEGORIE:
+            row[c] = wmean(grp[c], w)
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
     return out.sort_values("final_medio", ascending=False).reset_index(drop=True)
 
 
@@ -298,21 +424,22 @@ def tag_member_matrix(data) -> pd.DataFrame:
     return out.rename(columns={"mean": "final", "count": "n"})
 
 
-def tag_summary(data) -> pd.DataFrame:
-    r = ratings(data)
-    if r.empty:
+def tag_summary(data, pesati: bool = True) -> pd.DataFrame:
+    all_r = ratings(data)
+    if all_r.empty:
         return pd.DataFrame()
     tags = game_tags(data)
-    r = r.assign(tag=r["game_id"].map(lambda g: tags.get(g) or ["(senza tag)"])).explode("tag")
-    g = r.groupby("tag")
-    out = pd.DataFrame(
-        {
-            "final_medio": g["final"].mean(),
-            "giochi": g["game_id"].nunique(),
-            "abbandoni": g["stato"].apply(lambda s: int((s == "abbandonato").sum())),
-        }
-    )
-    return out.reset_index().sort_values("final_medio", ascending=False)
+
+    def explode(df):
+        return df.assign(tag=df["game_id"].map(lambda g: tags.get(g) or ["(senza tag)"])).explode("tag")
+
+    drops = explode(all_r[all_r["stato"] == "abbandonato"]).groupby("tag").size()
+    r = explode(game_ratings(data, pesati))
+    rows = [{"tag": t, "final_medio": wmean(grp["final"], grp["peso"]), "giochi": grp["game_id"].nunique(),
+             "abbandoni": int(drops.get(t, 0))} for t, grp in r.groupby("tag")]
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("final_medio", ascending=False)
 
 
 def hype_vs_reality(data) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -355,7 +482,7 @@ def affinity(data, min_common: int = 2) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["membro_a", "membro_b", "affinita", "giochi_in_comune"])
 
 
-def proposer_stats(data) -> pd.DataFrame:
+def proposer_stats(data, pesati: bool = True) -> pd.DataFrame:
     p = periods(data)
     p = p[p["stato"].isin(["in_gioco", "chiuso"])]
     if p.empty:
@@ -367,7 +494,7 @@ def proposer_stats(data) -> pd.DataFrame:
         counts = vote_counts(data, per)
         n_voters = len(period_votes(data, per))
         approval = counts["voti"].mean() / n_voters * 100 if n_voters else np.nan
-        fin = r.loc[r["period_id"] == per["period_id"], "final"].mean() if not r.empty else np.nan
+        fin = final_average(r[r["period_id"] == per["period_id"]], pesati) if not r.empty else np.nan
         rows.append({"proponente": nm.get(per["proponente_id"], "?"), "approvazione": approval, "final_vincitore": fin})
     df = pd.DataFrame(rows)
     return (
@@ -432,14 +559,15 @@ def predict(data, game_id: str, member_id: str | None = None) -> tuple[float, st
     return by_tag.mean(), "in base a: " + ", ".join(by_tag.index)
 
 
-def games_catalog(data) -> pd.DataFrame:
+def games_catalog(data, pesati: bool = True) -> pd.DataFrame:
     """Tutti i giochi con generi, piattaforme, durate e storico nel club."""
     g = data["giochi"].copy()
     g["tags"] = g["tag"].map(split_list)
+    g["sinossi"] = g["sinossi"].fillna("") if "sinossi" in g else ""
     g["platforms"] = g["piattaforme"].map(split_multi)
     for c in DURATE:
         g[c] = g[c].map(to_num).astype(float)
-    gs = game_summary(data)
+    gs = game_summary(data, pesati)
     fin = dict(zip(gs["game_id"], gs["final_medio"])) if not gs.empty else {}
     g["final_medio"] = g["game_id"].map(fin).astype(float)
     p = data["periodi"]
@@ -478,7 +606,7 @@ def replace_tag(giochi: pd.DataFrame, column: str, old: str, new: str | None) ->
     return df
 
 
-def game_club_history(data, game_id: str) -> list[dict]:
+def game_club_history(data, game_id: str, pesati: bool = True) -> list[dict]:
     """Periodi in cui il gioco è stato proposto, con esito e (se visibili) i voti."""
     p = periods(data)
     p = p[(p["stato"] != "bozza") & p["opzioni"].map(lambda o: game_id in split_list(o))]
@@ -488,6 +616,7 @@ def game_club_history(data, game_id: str) -> list[dict]:
     for _, per in p.iterrows():
         item = {"numero": per["numero"], "proponente": nm.get(per["proponente_id"], "?"), "stato": per["stato"],
                 "vinto": per["vincitore_id"] == game_id, "voti": None, "votanti": None, "valutazioni": None,
+                "final_medio": np.nan,
                 "rivelato": is_revealed(per)}
         if per["stato"] != "votazione":
             counts = vote_counts(data, per)
@@ -497,6 +626,7 @@ def game_club_history(data, game_id: str) -> list[dict]:
         if item["vinto"] and not r.empty:
             pr = r[r["period_id"] == per["period_id"]]
             if not pr.empty:
-                item["valutazioni"] = pr[["membro", "stato", "final", "ore"]].sort_values("final", ascending=False)
+                item["valutazioni"] = pr[["membro", "stato", "final", "ore", "peso", "commento"]].sort_values("final", ascending=False)
+                item["final_medio"] = final_average(pr, pesati)
         out.append(item)
     return out
