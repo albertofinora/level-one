@@ -23,7 +23,6 @@ st.set_page_config(page_title="Level One", page_icon="🎮", layout="centered")
 st.markdown(
     """<style>
     [data-testid="stMainBlockContainer"] {padding-top: 2.5rem; padding-bottom: 3rem;}
-    [data-testid="stElementContainer"]:has(.lo-cookie) {display: none;}
     </style>""",
     unsafe_allow_html=True,
 )
@@ -33,7 +32,7 @@ SCALA = ["–"] + [f"{x / 2:g}" for x in range(2, 21)]  # –, 1, 1.5, … 10
 MAX_TENTATIVI = 5
 BLOCCO_SECONDI = 120
 SESSIONE_MINUTI = 30          # dopo quanto tempo di inattività bisogna rientrare col PIN
-COOKIE = "levelone_sessione"
+SESSION_NAME = "levelone_sessione"
 
 
 # ================================================================ dati
@@ -144,9 +143,54 @@ def weight_label(r) -> str:
 
 # ================================================================ sessione persistente
 # Streamlit dimentica tutto quando si ricarica la pagina. Per restare dentro salviamo
-# nel browser un cookie firmato (vedi logic.make_session_token) che vale SESSIONE_MINUTI
-# dall'ultima azione. Lo scriviamo con un pezzetto di JavaScript e lo rileggiamo con
-# st.context.cookies quando la pagina viene riaperta.
+# nel browser (localStorage, con un cookie come riserva) un gettone firmato
+# (vedi logic.make_session_token) che vale SESSIONE_MINUTI dall'ultima azione.
+# Il gettone viene letto e scritto dal browser stesso tramite un piccolo componente:
+# su Streamlit Community Cloud il server può non ricevere i cookie del browser.
+
+SESSION_JS = """
+export default function(component) {
+  const { data, setStateValue } = component;
+  if (!data) return;
+  const name = data.name;
+  let store = null;
+  try { store = window.localStorage; } catch (e) {}
+  const secure = location.protocol === 'https:' ? '; Secure' : '';
+  try {
+    if (data.action === 'write') {
+      if (store) store.setItem(name, data.value);
+      document.cookie = name + '=' + data.value + '; Max-Age=' + data.max_age + '; Path=/; SameSite=Lax' + secure;
+    } else if (data.action === 'clear') {
+      if (store) store.removeItem(name);
+      document.cookie = name + '=; Max-Age=0; Path=/; SameSite=Lax' + secure;
+    }
+  } catch (e) {}
+  if (data.action === 'read') {
+    let v = '';
+    try { v = (store && store.getItem(name)) || ''; } catch (e) {}
+    if (!v) {
+      const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+      if (m) v = m[1];
+    }
+    setStateValue('token', v);
+  }
+}
+"""
+
+
+try:  # registrato a ogni esecuzione, come negli esempi di Streamlit
+    _SESSION_COMP = st.components.v2.component("level_one_sessione", js=SESSION_JS)
+except Exception:  # noqa: BLE001  (Streamlit troppo vecchio: niente sessione persistente)
+    _SESSION_COMP = None
+
+
+def session_component():
+    return _SESSION_COMP
+
+
+def _noop():
+    pass
+
 
 def admin_expected() -> str | None:
     expected = secret("admin_password")
@@ -182,22 +226,24 @@ def session_bind(data, member_id: str, admin: bool) -> str | None:
     return "|".join(parts) if parts else None
 
 
-def read_cookie() -> str | None:
-    try:
-        return st.context.cookies.get(COOKIE)
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def restore_session(data):
-    """Alla prima esecuzione dopo un ricaricamento: se c'è un cookie valido, rientra in automatico."""
-    if st.session_state.get("cookie_checked"):
+    """Dopo un ricaricamento: chiede al browser il gettone salvato e, se è valido, rientra da solo.
+
+    Alla prima esecuzione il valore non è ancora arrivato (None): si vede la pagina di accesso
+    e, appena il browser risponde, Streamlit riesegue lo script ed entra.
+    """
+    comp = session_component()
+    if comp is None or st.session_state.get("session_checked"):
         return
-    st.session_state["cookie_checked"] = True
-    token = read_cookie()
+    res = comp(key="sessione_lettura", data={"action": "read", "name": SESSION_NAME},
+               default={"token": None}, on_token_change=_noop, height=0)
+    token = res.token
+    if token is None:
+        return
+    st.session_state["session_checked"] = True
     if not token:
         return
-    st.session_state["cookie_seen"] = True
+    st.session_state["session_seen"] = True
     parsed = L.parse_session_token(token)
     if parsed is None:
         return
@@ -205,35 +251,29 @@ def restore_session(data):
     bind = session_bind(data, member_id, admin)
     if bind is None or not L.check_session_token(parsed, session_key(), bind):
         return
-    if member_id:
+    if member_id and not st.session_state.get("member_id"):
         st.session_state["member_id"] = member_id
     if admin:
         st.session_state["admin_ok"] = True
 
 
-def write_cookie(value: str, expires: str):
-    js = f"""<div class="lo-cookie"></div><script>
-    (function() {{
-      var secure = location.protocol === 'https:' ? '; Secure' : '';
-      document.cookie = '{COOKIE}={value}; Expires={expires}; Path=/; SameSite=Lax' + secure;
-    }})();
-    </script>"""
-    st.html(js, unsafe_allow_javascript=True)
-
-
-def sync_cookie(data):
-    """A ogni azione rinnova la scadenza del cookie; quando si esce lo cancella."""
+def sync_session(data):
+    """A ogni azione rinnova la scadenza del gettone nel browser; quando si esce lo cancella."""
+    comp = session_component()
+    if comp is None:
+        return
     member_id = st.session_state.get("member_id") or ""
     admin = bool(st.session_state.get("admin_ok"))
     bind = session_bind(data, member_id, admin) if (member_id or admin) else None
     if bind is not None:
-        # Scadenza arrotondata al minuto: il cookie viene riscritto al massimo una volta al minuto.
+        # Scadenza arrotondata al minuto: il gettone nel browser cambia al massimo una volta al minuto.
         exp = (int(time.time()) // 60 + SESSIONE_MINUTI + 1) * 60
         token = L.make_session_token(member_id, admin, exp, session_key(), bind)
-        write_cookie(token, time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(exp)))
-        st.session_state["cookie_seen"] = True
-    elif st.session_state.get("cookie_seen"):
-        write_cookie("", "Thu, 01 Jan 1970 00:00:00 GMT")
+        comp(key="sessione_scrittura", height=0,
+             data={"action": "write", "name": SESSION_NAME, "value": token, "max_age": SESSIONE_MINUTI * 60 + 60})
+        st.session_state["session_seen"] = True
+    elif st.session_state.get("session_seen"):
+        comp(key="sessione_scrittura", height=0, data={"action": "clear", "name": SESSION_NAME})
 
 
 # ================================================================ accesso
@@ -1398,7 +1438,7 @@ def main():
     if me not in nm:
         st.session_state.pop("member_id", None)
         login_view(data)
-        sync_cookie(data)
+        sync_session(data)
         return
 
     st.markdown("## 🎮 Level One")
@@ -1421,11 +1461,10 @@ def main():
         admin_gate(data)
 
     st.divider()
-    st.caption(f"Resti connesso per {SESSIONE_MINUTI} minuti dall'ultima azione, anche se ricarichi la pagina.")
     if st.button(f"Esci ({nm[me]})", type="tertiary"):
         st.session_state.pop("member_id", None)
         st.session_state["admin_ok"] = False
         st.rerun()
-    sync_cookie(data)
+    sync_session(data)
 
 main()
