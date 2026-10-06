@@ -101,8 +101,9 @@ Per collegarla al foglio anche in locale, copia `secrets.toml.example` in `.stre
 Tutto si fa da **Admin → Periodi**.
 
 1. **Crea il periodo.** Da *Nuovo periodo* scegli il proponente, la data e fino a 5 giochi. Se un gioco non c'è ancora, aggiungilo prima da **Giochi**. Puoi partire in *Bozza*, se vuoi ricontrollare le opzioni, oppure aprire subito la votazione.
-2. **Apri la votazione.** Dalla bozza premi *Apri votazione*.
+2. **Apri la votazione.** Dalla bozza premi *Apri votazione*. La scheda **Proposte** compare ai membri solo da questo momento e sparisce di nuovo quando chiudi la votazione.
 3. **Segui chi manca.** Nel riquadro del periodo vedi quanti hanno votato e i nomi di chi manca. Tu vedi anche i conteggi parziali, i membri no.
+   - **Chi partecipa.** Nel riquadro del periodo, in *Bozza* o in *Votazione*, apri **Chi partecipa alla votazione** e scegli chi escludere (per esempio chi sai già che non ci sarà), poi premi *Salva*. Gli esclusi vedono le proposte ma non votano, e non contano né tra i votanti né tra chi manca. Lo stesso riquadro elenca chi si è escluso da solo dall'app: tu non puoi farlo rientrare, ma lui può farlo finché la votazione è aperta. Per riammettere qualcuno che hai escluso tu, toglilo dall'elenco e salva. L'esclusione vale solo per la votazione delle proposte: hype e valutazioni restano aperti a tutti.
 4. **Chiudi la votazione.** Se c'è un solo primo classificato, è già selezionato come vincitore. Conferma con *Chiudi votazione e conferma il vincitore*. Il periodo passa a *In gioco*: i membri possono dare l'hype e poi valutare.
 5. **Chiudi il periodo.** Quando hanno valutato tutti (vedi chi manca nel riquadro), premi *Chiudi il periodo*. Da quel momento le valutazioni non si possono più modificare.
 6. **Rivela i voti alla serata.** Finché non premi *Rivela i voti a tutti*, ogni membro vede solo i propri voti. Le valutazioni di quel periodo sono escluse da Storico e Statistiche, e l'app mostra solo quanti hanno già valutato. Alla serata premi il pulsante e tutto compare per tutti. L'hype fa eccezione: è visibile a tutti già da quando il periodo passa a *In gioco*.
@@ -194,7 +195,7 @@ Se devi correggere a mano nel foglio:
 
 Limiti da conoscere:
 
-- Dopo l'accesso il browser tiene un cookie firmato che vale 30 minuti dall'ultima azione (`SESSIONE_MINUTI` in `app.py`). Vale anche per l'area admin. Il cookie smette di valere se premi *Esci*, se azzeri il PIN di quella persona o se cambi `admin_password` o `pin_pepper`. Chi usa un dispositivo condiviso deve premere *Esci*.
+- Dopo l'accesso il browser conserva un gettone firmato (nel localStorage, con un cookie come riserva) che vale 30 minuti dall'ultima azione (`SESSIONE_MINUTI` in `app.py`). Vale anche per l'area admin. Il gettone smette di valere se premi *Esci*, se azzeri il PIN di quella persona o se cambi `admin_password` o `pin_pepper`. Chi usa un dispositivo condiviso deve premere *Esci*.
 - Il PIN a 4 cifre basta tra amici, ma non è una protezione forte. Il blocco dopo 5 tentativi vale per la singola sessione del browser: chi ricarica la pagina può riprovare.
 - I PIN nel foglio sono salvati cifrati, mai in chiaro.
 - Nel foglio salva solo soprannomi: niente email, telefoni o cognomi.

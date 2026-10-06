@@ -431,6 +431,10 @@ def playing_tab(data, me: str):
         pid, gid = per["period_id"], per["vincitore_id"]
         st.subheader(f"🎮 {gm.get(gid, '?')}")
         st.caption(f"Periodo {per['numero']} · proposto da {nm.get(per['proponente_id'], '?')}")
+        game = data["giochi"][data["giochi"]["game_id"] == gid]
+        if not game.empty:
+            g = game.iloc[0]
+            st.markdown("🔗 " + links_line(g["titolo"], g["hltb_url"], L.split_list(g["piattaforme"])))
 
         rated = L.my_rating(data, pid, me)
         n_rated = len(L.latest(data["valutazioni"], ["period_id", "member_id"]).query("period_id == @pid"))
@@ -1488,21 +1492,19 @@ def main():
     st.markdown("## 🎮 Level One")
     st.caption(f"Ciao {nm[me]}!")
 
-    tabs = st.tabs(["🗳️ Proposte", "🎮 In gioco", "🕹️ Giochi", "📊 Statistiche", "📜 Storico", "📖 Guida", "🔧 Admin"])
-    with tabs[0]:
-        proposals_tab(data, me)
-    with tabs[1]:
-        playing_tab(data, me)
-    with tabs[2]:
-        games_tab(data, me)
-    with tabs[3]:
-        stats_tab(data, me)
-    with tabs[4]:
-        history_tab(data, me)
-    with tabs[5]:
-        show_guide()
-    with tabs[6]:
-        admin_gate(data)
+    # La scheda Proposte compare solo mentre c'è una votazione aperta.
+    voting_open = (L.periods(data)["stato"] == "votazione").any()
+    sections = ([("🗳️ Proposte", lambda: proposals_tab(data, me))] if voting_open else []) + [
+        ("🎮 In gioco", lambda: playing_tab(data, me)),
+        ("🕹️ Giochi", lambda: games_tab(data, me)),
+        ("📊 Statistiche", lambda: stats_tab(data, me)),
+        ("📜 Storico", lambda: history_tab(data, me)),
+        ("📖 Guida", show_guide),
+        ("🔧 Admin", lambda: admin_gate(data)),
+    ]
+    for tab, (_, render) in zip(st.tabs([label for label, _ in sections]), sections):
+        with tab:
+            render()
 
     st.divider()
     if st.button(f"Esci ({nm[me]})", type="tertiary"):
