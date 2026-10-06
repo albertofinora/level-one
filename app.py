@@ -108,21 +108,12 @@ def empty_ratings_note():
     st.info("Le statistiche compaiono appena qualcuno valuta il primo gioco nella sezione **In gioco**.")
 
 
-def drops_toggle(where: str) -> bool:
-    """Interruttore "abbandoni pesati / solo chi l'ha finito", per tutti.
-
-    Compare in più schede: ogni copia ha la sua chiave, ma la scelta è una sola e resta
-    uguale ovunque (chiave condivisa "abbandoni_pesati")."""
-    key = f"abb_{where}"
-    st.session_state.setdefault("abbandoni_pesati", True)
-    st.session_state[key] = st.session_state["abbandoni_pesati"]
-
-    def sync():
-        st.session_state["abbandoni_pesati"] = st.session_state[key]
-
-    return st.toggle("Conta anche chi l'ha abbandonato", key=key, on_change=sync,
-                     help="Acceso: chi ha abbandonato conta in proporzione alle ore giocate rispetto alla storia "
-                          "principale. Spento: medie solo di chi l'ha finito.")
+def drops_toggle() -> bool:
+    """Interruttore "abbandoni pesati / solo chi l'ha finito". Sta solo in Statistiche."""
+    on = st.toggle("Conta anche chi l'ha abbandonato", value=True, key="abbandoni_pesati")
+    st.caption("Acceso: chi l'ha abbandonato conta in proporzione alle ore giocate rispetto alla storia principale. "
+               "Spento: solo chi l'ha finito.")
+    return on
 
 
 def comments_list(df: pd.DataFrame, name_col: str = "membro"):
@@ -362,11 +353,30 @@ def proposals_tab(data, me: str):
         options = L.split_list(per["opzioni"])
         voters = L.eligible_voters(data, per)
         n_voted = len(L.period_votes(data, per))
-        st.caption(f"Hanno votato {n_voted} su {len(voters)}. I risultati si vedono quando l'admin chiude la votazione.")
+        excluded = L.exclusions(data, per["period_id"])
+        out_txt = f" ({len(excluded)} non partecipa)" if len(excluded) == 1 else (
+            f" ({len(excluded)} non partecipano)" if excluded else "")
+        st.caption(f"Hanno votato {n_voted} su {len(voters)}{out_txt}. "
+                   "I risultati si vedono quando l'admin chiude la votazione.")
 
         games_intro(data, options)
         if per["proponente_id"] == me:
             st.info("Sei tu il proponente di questo periodo, quindi non voti.")
+            continue
+        if excluded.get(me) == "admin":
+            st.info("L'admin ti ha escluso da questa votazione: puoi vedere le proposte, ma non votare.")
+            continue
+
+        def set_participation(pid=per["period_id"]):
+            on = st.session_state[f"part_{pid}"]
+            save_append("partecipazioni", {"period_id": pid, "member_id": me, "partecipa": "1" if on else "0",
+                                           "da": "membro", "ts": now_ts()})
+
+        part_key = f"part_{per['period_id']}"
+        st.session_state[part_key] = me not in excluded
+        if not st.toggle("Partecipo a questa votazione", key=part_key, on_change=set_participation):
+            st.caption("Non partecipi: il tuo voto non conta e non sei tra quelli che mancano. "
+                       "Puoi cambiare idea finché la votazione è aperta.")
             continue
 
         previous = L.my_vote(data, per["period_id"], me)
@@ -541,7 +551,7 @@ def stats_tab(full_data, me: str):
         empty_ratings_note()
         return
     if section in ("Classifica", "Generi", "Proponenti"):
-        st.session_state["_pesati"] = drops_toggle("stats")
+        st.session_state["_pesati"] = drops_toggle()
     {
         "Classifica": stats_ranking,
         "Membri": stats_members,
@@ -578,6 +588,7 @@ def stats_ranking(data, me):
             "valutazioni": "Voti",
         },
     )
+    st.caption("Divis. = divisività: più è alta, più il gruppo è spaccato su quel gioco.")
     with st.expander("Tutti i dettagli"):
         st.dataframe(
         gs[["gioco", "final_medio", "media_categorie", "divisivita", "gradimento_normalizzato", "valutazioni", "abbandoni", "ore_medie"]],
@@ -735,14 +746,13 @@ def filter_games(cat: pd.DataFrame, key: str) -> pd.DataFrame:
     all_plats = sorted({p for plats in cat["platforms"] for p in plats}, key=str.lower)
     with st.container(border=True):
         query = st.text_input("Cerca per titolo", placeholder="Titolo…", key=f"{key}_q")
-        genres = ms("Generi", all_genres, key=f"{key}_gen", help="Mostra i giochi che hanno tutti i generi scelti.")
-        plats = ms("Piattaforme", all_plats, key=f"{key}_plat", help="Mostra i giochi disponibili su almeno una delle piattaforme scelte.")
+        genres = ms("Generi (il gioco deve averli tutti)", all_genres, key=f"{key}_gen")
+        plats = ms("Piattaforme (almeno una)", all_plats, key=f"{key}_plat")
         known = cat["ore_storia"].dropna()
         max_hours, keep_unknown, top = None, True, 0
         if not known.empty:
             top = max(int(np.ceil(known.max())), 1)
-            max_hours = st.slider("Durata massima (ore, storia principale)", 0, top, top, key=f"{key}_ore",
-                                  help="Mostra i giochi che si finiscono in al massimo queste ore.")
+            max_hours = st.slider("Durata massima (ore, storia principale)", 0, top, top, key=f"{key}_ore")
             if max_hours < top:
                 keep_unknown = st.checkbox("Mostra anche i giochi senza durata", value=False, key=f"{key}_unk")
 
@@ -815,8 +825,9 @@ def game_card(g, data, pesati: bool = True):
                     if v is None:
                         st.caption("Nessuna valutazione ancora." if h["rivelato"] else "🔒 Valutazioni non ancora rivelate.")
                     else:
+                        drops = int(((v["stato"] == "abbandonato") & v["final"].notna()).sum())
                         st.caption(f"FINAL medio {fmt(h['final_medio'])} su {int(v['final'].notna().sum())} voti"
-                                   + ("" if pesati else " (solo chi l'ha finito)"))
+                                   + (" · chi l'ha abbandonato conta in proporzione alle ore (colonna Peso)" if drops else ""))
                         show = v.assign(peso=v.apply(weight_label, axis=1))
                         st.dataframe(show[["membro", "stato", "final", "ore", "peso"]], hide_index=True, column_config={
                             "membro": "Membro", "stato": "Stato",
@@ -841,7 +852,7 @@ def games_view(res: pd.DataFrame, data, key: str, pesati: bool = True):
 
 def games_tab(full_data, me):
     data = L.visible_data(full_data)
-    pesati = drops_toggle("games")
+    pesati = True
     cat = L.games_catalog(data, pesati)
     if cat.empty:
         st.info("Il database dei giochi è ancora vuoto.")
@@ -866,7 +877,7 @@ def history_tab(data, me):
     gm, nm = L.game_map(data), L.name_map(data)
     vis = L.visible_data(data)
     r = L.ratings(vis)
-    pesati = drops_toggle("history") if not r.empty else True
+    pesati = True
     for _, per in p.iterrows():
         winner = gm.get(per["vincitore_id"], "da decidere")
         pr = r[r["period_id"] == per["period_id"]]
@@ -896,6 +907,8 @@ def history_tab(data, me):
                     "membro": "Membro", "stato": "Stato", "final": st.column_config.NumberColumn("FINAL", format="%.1f"),
                     "ore": st.column_config.NumberColumn("Ore", format="%.0f"),
                     "peso": st.column_config.TextColumn("Peso", help="Solo per chi ha abbandonato")})
+                if ((pr["stato"] == "abbandonato") & pr["final"].notna()).any():
+                    st.caption("Nel FINAL medio chi l'ha abbandonato conta in proporzione alle ore giocate (colonna Peso).")
                 comments_list(show)
 
 
@@ -967,8 +980,8 @@ def admin_periods(data):
             with st.form("nuovo_periodo", clear_on_submit=True):
                 prop = st.selectbox("Proponente", active_ids, format_func=nm.get)
                 when = st.date_input("Data", value=date.today(), format="DD/MM/YYYY")
-                opts = ms("Opzioni (fino a 5)", games, format_func=gm.get, max_selections=5,
-                                      help="Se un gioco non c'è, aggiungilo prima nella sezione Giochi.")
+                opts = ms("Opzioni (fino a 5)", games, format_func=gm.get, max_selections=5)
+                st.caption("Se un gioco non c'è, aggiungilo prima nella sezione Giochi.")
                 start = st.radio("Stato iniziale", ["bozza", "votazione"], format_func=L.ETICHETTE_STATO.get, horizontal=True)
                 ok = st.form_submit_button("Crea periodo", type="primary")
             if ok:
@@ -1009,13 +1022,18 @@ def admin_periods(data):
                     if save_table("periodi", data["periodi"][data["periodi"]["period_id"] != pid]):
                         st.rerun()
 
+            if stato in ("bozza", "votazione"):
+                admin_participants(data, per)
+
             if stato in ("votazione", "in_gioco", "chiuso"):
                 voters = L.eligible_voters(data, per)
                 votes = L.period_votes(data, per)
                 missing = [nm.get(v) for v in voters if v not in set(votes["member_id"])]
                 counts = L.vote_counts(data, per)
+                excluded = L.exclusions(data, pid)
                 st.caption(f"Hanno votato {len(votes)} su {len(voters)}."
-                           + (f" Mancano: {', '.join(missing)}." if missing and stato == "votazione" else ""))
+                           + (f" Mancano: {', '.join(missing)}." if missing and stato == "votazione" else "")
+                           + (f" Non partecipano: {', '.join(nm.get(x, x) for x in excluded)}." if excluded else ""))
                 st.dataframe(counts[["gioco", "voti", "percentuale"]], hide_index=True, column_config={
                     "gioco": "Opzione", "voti": "Voti",
                     "percentuale": st.column_config.NumberColumn("% votanti", format="%.0f%%")})
@@ -1075,6 +1093,33 @@ def admin_periods(data):
                 if L.is_revealed(per) and st.button("Nascondi di nuovo i voti", key=f"hide_{pid}"):
                     if update_period(data, pid, rivelato=""):
                         st.rerun()
+
+
+def admin_participants(data, per):
+    """Chi partecipa alla votazione delle proposte: l'admin può escludere in anticipo chi non c'è."""
+    pid = per["period_id"]
+    nm = L.name_map(data)
+    m = L.members(data)
+    candidates = [x for x in m.loc[m["attivo"], "member_id"] if x != per["proponente_id"]]
+    excluded = L.exclusions(data, pid)
+    by_admin = [x for x in candidates if excluded.get(x) == "admin"]
+    by_self = [nm.get(x) for x in candidates if excluded.get(x) == "membro"]
+    with st.expander(f"Chi partecipa alla votazione · {len(candidates) - len(excluded)} su {len(candidates)}"):
+        with st.form(f"partecipanti_{pid}"):
+            chosen = st.multiselect("Escludi dalla votazione", candidates, default=by_admin, format_func=nm.get,
+                                    placeholder="Nessuno escluso")
+            ok = st.form_submit_button("Salva")
+        st.caption("Gli esclusi vedono le proposte ma non possono votare, e non risultano tra quelli che mancano."
+                   + (f" Si sono esclusi da soli: {', '.join(by_self)}." if by_self else ""))
+    if not ok:
+        return
+    changes = [(x, "0") for x in chosen if x not in by_admin] + [(x, "1") for x in by_admin if x not in chosen]
+    for i, (mid, flag) in enumerate(changes):
+        row = {"period_id": pid, "member_id": mid, "partecipa": flag, "da": "admin", "ts": now_ts()}
+        if not save_append("partecipazioni", row):
+            return
+    st.toast("Partecipanti aggiornati")
+    st.rerun()
 
 
 def admin_ratings_table(data, per):
@@ -1192,12 +1237,11 @@ def game_form(data, prefix: str, submit_label: str):
                    key=str.lower)
     with st.form(_gkey(prefix, "form")):
         st.text_input("Titolo", key=_gkey(prefix, "titolo"))
-        ms("Generi", tags, accept_new_options=True, key=_gkey(prefix, "tag"), help="Puoi scriverne di nuovi.")
+        ms("Generi (puoi scriverne di nuovi)", tags, accept_new_options=True, key=_gkey(prefix, "tag"))
         ms("Piattaforme", plats, accept_new_options=True, key=_gkey(prefix, "piatt"))
         st.text_input("Anno di uscita", key=_gkey(prefix, "anno"))
         st.text_area("Sinossi (senza spoiler)", key=_gkey(prefix, "sinossi"), max_chars=800, height=120,
-                     help="Due o tre frasi per far capire agli altri di che gioco si tratta. Compare quando il gioco "
-                          "viene proposto e nella sua scheda.")
+                     placeholder="Due o tre frasi per far capire agli altri di che gioco si tratta.")
         st.caption("Durata in ore (da HowLongToBeat o a mano). Lascia vuoto se non la conosci.")
         c1, c2, c3 = st.columns(3)
         c1.text_input("Storia", key=_gkey(prefix, "ore_storia"))
@@ -1287,8 +1331,8 @@ def admin_tags(data):
     used_by = games.loc[games[column].map(lambda v: tag in splitter(v)), "titolo"].tolist()
     st.caption("Usato da: " + ", ".join(used_by))
 
-    new_name = st.text_input("Nuovo nome", value=tag, key=f"tag_new_{kind}_{tag}",
-                             help="Se scrivi il nome di un tag che esiste già, i due tag vengono uniti.")
+    new_name = st.text_input("Nuovo nome", value=tag, key=f"tag_new_{kind}_{tag}")
+    st.caption("Se scrivi il nome di un tag che esiste già, i due tag vengono uniti.")
     c1, c2 = st.columns(2)
     if c1.button("Rinomina", key=f"tag_ren_{kind}_{tag}", width="stretch"):
         target = new_name.strip()

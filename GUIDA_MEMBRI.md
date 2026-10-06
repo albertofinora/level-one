@@ -15,7 +15,7 @@ Se usi un telefono o un computer che non è tuo, premi **Esci** quando hai finit
 ## Come funziona un periodo
 
 1. **Le proposte.** A turno, un membro propone fino a 5 giochi. Chi propone non vota.
-2. **La votazione.** Nella scheda **Proposte** spunta *tutti* i giochi che ti andrebbe di giocare, anche solo uno o anche tutti. Puoi cambiare le tue scelte finché la votazione è aperta. I risultati si vedono solo quando l'admin la chiude, così nessuno si fa influenzare.
+2. **La votazione.** Nella scheda **Proposte** spunta *tutti* i giochi che ti andrebbe di giocare, anche solo uno o anche tutti. Puoi cambiare le tue scelte finché la votazione è aperta. I risultati si vedono solo quando l'admin la chiude, così nessuno si fa influenzare. Se in quel periodo non ci sei, spegni l'interruttore **Partecipo a questa votazione**: il tuo voto non conta e non risulti tra chi manca. Puoi riaccenderlo finché la votazione è aperta, e se avevi già votato le tue scelte tornano valide. Anche l'admin può escluderti da una votazione: in quel caso vedi le proposte ma non puoi votare. L'esclusione vale solo per la votazione: hype e valutazione finale restano aperti a tutti.
 3. **L'hype.** Appena il gioco è scelto, nella scheda **In gioco** dai un voto da 1 a 10 a quanto ti ispira. Meglio darlo prima di iniziare, ma puoi metterlo o cambiarlo quando vuoi finché il gioco è in corso, anche dopo la valutazione. L'hype di tutti è visibile subito, sotto il tuo, nella scheda **In gioco** e nello **Storico**.
 4. **La valutazione.** Quando hai finito il gioco, o quando lo molli, compila la valutazione nella scheda **In gioco**. Puoi modificarla finché l'admin non chiude il periodo.
 5. **La serata.** Fino alla serata in cui ne parliamo tutti insieme, ognuno vede solo i propri voti: gli altri restano nascosti 🔒, anche nelle statistiche. Alla serata l'admin li rivela e compaiono nello **Storico** e nelle **Statistiche**.
@@ -68,7 +68,7 @@ Il **commento** è facoltativo, fino a 500 caratteri. Nello Storico e nelle sche
 
 ## Le statistiche
 
-**Abbandoni pesati o esclusi.** In Classifica, Generi, Proponenti, nella scheda Giochi e nello Storico trovi l'interruttore **Conta anche chi l'ha abbandonato**. Acceso (come parte l'app) usa i voti pesati sulle ore; spento mostra le medie solo di chi l'ha finito. La scelta vale per tutte le schede finché resti nell'app. Le statistiche dei singoli membri non sono pesate: lì conta il tuo giudizio.
+**Abbandoni pesati o esclusi.** In cima alle Statistiche trovi l'interruttore **Conta anche chi l'ha abbandonato**, che vale per Classifica, Generi e Proponenti. Acceso (come parte l'app) chi ha abbandonato conta in proporzione alle ore giocate; spento le medie sono solo di chi l'ha finito. Nella scheda Giochi e nello Storico le medie sono sempre quelle pesate, e la colonna **Peso** mostra quanto conta ogni abbandono. Le statistiche dei singoli membri non sono pesate: lì conta il tuo giudizio.
 
 
 - **Classifica**: i giochi per FINAL medio. Puoi ordinarli anche per *divisività* (quanto il gruppo è spaccato) o per *gradimento normalizzato* (quanto un gioco è piaciuto rispetto al solito di chi l'ha votato; serve a pesare allo stesso modo chi dà sempre 8 e chi dà sempre 5).

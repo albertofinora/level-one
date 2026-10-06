@@ -4,7 +4,7 @@ Due backend con la stessa interfaccia:
 - SheetsStore: un foglio Google, un foglio di lavoro (tab) per tabella.
 - LocalStore: file CSV in una cartella, per provare l'app sul proprio PC.
 
-Le tabelle modificate dai membri (pin, voti_proposte, hype, valutazioni)
+Le tabelle modificate dai membri (pin, voti_proposte, hype, valutazioni, partecipazioni)
 sono "solo aggiunta": ogni invio aggiunge una riga e vale l'ultima riga di
 ciascun membro. In questo modo due persone che votano nello stesso momento
 non si sovrascrivono a vicenda. Le altre tabelle le modifica solo l'admin.
@@ -29,6 +29,7 @@ SCHEMA: dict[str, list[str]] = {
     "pin": ["member_id", "pin_hash", "ts"],
     "voti_proposte": ["period_id", "member_id", "scelte", "ts"],
     "hype": ["period_id", "member_id", "voto", "ts"],
+    "partecipazioni": ["period_id", "member_id", "partecipa", "da", "ts"],
     "valutazioni": [
         "period_id", "member_id", "game_id", "stato", "ore",
         "storia", "ambientazione", "gameplay", "audio", "longevita", "final",
@@ -36,7 +37,7 @@ SCHEMA: dict[str, list[str]] = {
     ],
 }
 
-APPEND_ONLY = {"pin", "voti_proposte", "hype", "valutazioni"}
+APPEND_ONLY = {"pin", "voti_proposte", "hype", "valutazioni", "partecipazioni"}
 
 
 def new_id() -> str:

@@ -235,17 +235,45 @@ def hidden_with_ratings(data) -> int:
 
 # ---------------------------------------------------------------- votazione proposte
 
+def exclusions(data, period_id: str) -> dict[str, str]:
+    """Chi non partecipa alla votazione delle proposte di un periodo: {member_id: "admin" | "membro"}.
+
+    L'esclusione decisa dall'admin prevale: il membro non può annullarla.
+    Un membro che si è escluso da solo può rientrare finché la votazione è aperta.
+    """
+    p = data.get("partecipazioni")
+    if p is None or p.empty:
+        return {}
+    p = p[p["period_id"] == period_id]
+    out = {}
+    for who in ("membro", "admin"):  # l'admin per ultimo, così prevale
+        last = latest(p[p["da"] == who], ["period_id", "member_id"])
+        for mid, flag in zip(last["member_id"], last["partecipa"]):
+            if str(flag) == "0":
+                out[mid] = who
+            elif out.get(mid) == who:
+                out.pop(mid)
+    return out
+
+
 def eligible_voters(data, period) -> list[str]:
+    """Chi può votare le proposte: membri attivi, tranne il proponente e chi non partecipa."""
     m = members(data)
-    return [mid for mid in m.loc[m["attivo"], "member_id"] if mid != period["proponente_id"]]
+    excluded = exclusions(data, period["period_id"])
+    return [mid for mid in m.loc[m["attivo"], "member_id"]
+            if mid != period["proponente_id"] and mid not in excluded]
 
 
 def period_votes(data, period) -> pd.DataFrame:
-    """Ultimo voto valido di ciascun membro per il periodo (il proponente è escluso)."""
+    """Ultimo voto valido di ciascun membro per il periodo.
+
+    Esclusi il proponente e chi non partecipa: i loro voti restano salvati ma non contano
+    (se chi si era escluso rientra, il suo voto torna valido)."""
     v = data["voti_proposte"]
     v = v[v["period_id"] == period["period_id"]]
     v = latest(v, ["period_id", "member_id"])
-    return v[v["member_id"] != period["proponente_id"]]
+    excluded = exclusions(data, period["period_id"])
+    return v[(v["member_id"] != period["proponente_id"]) & ~v["member_id"].isin(excluded)]
 
 
 def my_vote(data, period_id: str, member_id: str) -> list[str] | None:
