@@ -658,3 +658,97 @@ def game_club_history(data, game_id: str, pesati: bool = True) -> list[dict]:
                 item["final_medio"] = final_average(pr, pesati)
         out.append(item)
     return out
+
+
+# ---------------------------------------------------------------- ruota del proponente
+# Estrazione "a sacchetto": chi ha già proposto esce dalla ruota finché non hanno proposto
+# tutti i membri attivi, poi si ricomincia. Chi ha proposto per ultimo non può uscire subito
+# di nuovo. Il sacchetto si ricava dai periodi (anche quelli creati a mano), quindi un
+# periodo eliminato o un'estrazione annullata rimettono il proponente nel sacchetto.
+
+MOTIVI_ANNULLO = {"errore": "annullata per errore", "passa": "ha passato il turno"}
+
+
+def draws(data) -> pd.DataFrame:
+    """Estrazioni della ruota (ultima versione di ciascuna), dalla più vecchia alla più recente.
+
+    stato: "valida" oppure "annullata" (motivo "errore" o "passa"). Un'estrazione il cui
+    periodo è stato eliminato viene mostrata come annullata."""
+    d = data.get("estrazioni")
+    if d is None or d.empty:
+        return pd.DataFrame(columns=["draw_id", "period_id", "member_id", "candidati", "stato", "motivo", "ts"])
+    first_ts = d.groupby("draw_id")["ts"].first()
+    d = latest(d, ["draw_id"]).copy()
+    d["ts_estrazione"] = d["draw_id"].map(first_ts)
+    existing = set(data["periodi"]["period_id"])
+    gone = (d["stato"] == "valida") & ~d["period_id"].isin(existing)
+    d.loc[gone, "stato"] = "annullata"
+    d.loc[gone, "motivo"] = "eliminato"
+    return d.sort_values("ts_estrazione").reset_index(drop=True)
+
+
+def proposer_bag(data, ignore_period: str | None = None) -> tuple[list[str], list[str]]:
+    """(nel sacchetto, hanno già proposto in questo giro), solo membri attivi, nell'ordine dei membri."""
+    m = members(data)
+    active = m.loc[m["attivo"], "member_id"].tolist()
+    p = periods(data)
+    if ignore_period:
+        p = p[p["period_id"] != ignore_period]
+    done: set[str] = set()
+    for pid in p["proponente_id"]:
+        if pid in active:
+            done.add(pid)
+            if set(active) <= done:
+                done = set()
+    bag = [x for x in active if x not in done]
+    last = p["proponente_id"].iloc[-1] if not p.empty else None
+    if last in bag and len(bag) > 1:
+        bag.remove(last)
+    return bag, [x for x in active if x in done]
+
+
+def wheel_candidates(data, redo_period: str | None = None, excluded=()) -> tuple[list[str], str]:
+    """Chi entra nella ruota per una nuova estrazione (o per rifare quella del periodo redo_period).
+
+    Chi ha passato il turno in questo periodo resta fuori da questa estrazione ma rimane nel
+    sacchetto per le prossime. Se non resta nessuno, si riparte con tutti (nota non vuota)."""
+    bag, _ = proposer_bag(data, ignore_period=redo_period)
+    out = set(excluded)
+    if redo_period:
+        d = draws(data)
+        passed = d[(d["period_id"] == redo_period) & (d["stato"] == "annullata") & (d["motivo"] == "passa")]
+        out |= set(passed["member_id"])
+    cands = [x for x in bag if x not in out]
+    if cands:
+        return cands, ""
+    m = members(data)
+    p = periods(data)
+    if redo_period:
+        p = p[p["period_id"] != redo_period]
+    last = p["proponente_id"].iloc[-1] if not p.empty else None
+    cands = [x for x in m.loc[m["attivo"], "member_id"] if x not in out and x != last]
+    return cands, "Nel sacchetto non restava nessuno: si riparte con tutti." if cands else ""
+
+
+def current_draw(data) -> pd.Series | None:
+    """L'ultima estrazione valida, finché il suo periodo è ancora in bozza (si può rifare)."""
+    d = draws(data)
+    d = d[d["stato"] == "valida"]
+    if d.empty:
+        return None
+    last = d.iloc[-1]
+    per = period_row(data, last["period_id"])
+    if per is None or per["stato"] != "bozza":
+        return None
+    return last
+
+
+def wheel_rotation(n: int, index: int, draw_id: str, turns: int = 6) -> float:
+    """Di quanti gradi ruotare la ruota perché la fetta `index` si fermi sotto la freccia in alto.
+
+    Un piccolo scostamento dentro la fetta (sempre uguale per la stessa estrazione) evita che
+    si fermi sempre esattamente a metà."""
+    slice_deg = 360 / n
+    center = (index + 0.5) * slice_deg
+    jitter = ((int(hashlib.sha256(draw_id.encode()).hexdigest()[:8], 16) % 1000) / 1000 - 0.5) * 0.6 * slice_deg
+    return turns * 360 - center + jitter

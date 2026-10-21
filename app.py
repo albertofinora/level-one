@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import html as html_lib
 import io
+import math
+import secrets as secrets_lib
 import os
 import time
 import zipfile
@@ -873,6 +876,7 @@ def games_tab(full_data, me):
 # ================================================================ storico
 
 def history_tab(data, me):
+    draws_history(data)
     p = L.periods(data)
     p = p[p["stato"] != "bozza"].iloc[::-1]
     if p.empty:
@@ -914,6 +918,179 @@ def history_tab(data, me):
                 if ((pr["stato"] == "abbandonato") & pr["final"].notna()).any():
                     st.caption("Nel FINAL medio chi l'ha abbandonato conta in proporzione alle ore giocate (colonna Peso).")
                 comments_list(show)
+
+
+# ================================================================ ruota del proponente
+
+RUOTA_COLORI = ["#4F46E5", "#DB2777", "#059669", "#D97706", "#0284C7", "#7C3AED", "#DC2626", "#0D9488", "#65A30D", "#9333EA"]
+
+
+def wheel_svg(names: list[str], rotation: float, anim_id: str | None = None, winner: str = "", note: str = "") -> str:
+    """Ruota in SVG. Con anim_id gira (solo CSS, niente JavaScript) e si ferma sul vincitore.
+
+    Va mostrata con st.markdown(..., unsafe_allow_html=True): st.html toglie gli SVG."""
+    n = max(len(names), 1)
+    cx = cy = 150
+    r = 140
+    step = 360 / n
+    parts = []
+    for i, name in enumerate(names):
+        a0, a1 = math.radians(i * step), math.radians((i + 1) * step)
+        color = RUOTA_COLORI[i % len(RUOTA_COLORI)]
+        if n == 1:
+            parts.append(f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="{color}"/>')
+        else:
+            x0, y0 = cx + r * math.sin(a0), cy - r * math.cos(a0)
+            x1, y1 = cx + r * math.sin(a1), cy - r * math.cos(a1)
+            large = 1 if step > 180 else 0
+            parts.append(f'<path d="M{cx},{cy} L{x0:.2f},{y0:.2f} A{r},{r} 0 {large} 1 {x1:.2f},{y1:.2f} Z" '
+                         f'fill="{color}" stroke="#fff" stroke-width="2"/>')
+        center = (i + 0.5) * step
+        size = 15 if n <= 6 else 13 if n <= 9 else 11
+        label = html_lib.escape(name if len(name) <= 12 else name[:11] + "…")
+        parts.append(f'<g transform="rotate({center:.2f} {cx} {cy})"><text x="{cx}" y="{cy - r * 0.6:.1f}" '
+                     f'transform="rotate(-90 {cx} {cy - r * 0.6:.1f})" text-anchor="middle" dominant-baseline="middle" '
+                     f'fill="#fff" font-size="{size}" font-weight="700" font-family="sans-serif">{label}</text></g>')
+    if anim_id:
+        cls = f"lo-ruota-{anim_id}"
+        style = (f"<style>@keyframes {cls}-giro {{from {{transform: rotate(0deg);}} to {{transform: rotate({rotation:.2f}deg);}}}}"
+                 f".{cls} {{transform-origin: 150px 150px; animation: {cls}-giro 5.5s cubic-bezier(.12,.72,.1,1) forwards;}}"
+                 f"@keyframes {cls}-esito {{from {{opacity: 0;}} to {{opacity: 1;}}}}"
+                 f".{cls}-esito {{opacity: 0; animation: {cls}-esito .6s ease-out 5.6s forwards;}}</style>")
+        group = f'<g class="{cls}">'
+    else:
+        cls, style = "", ""
+        group = f'<g transform="rotate({rotation:.2f} {cx} {cy})">'
+    pointer = '<polygon points="138,2 162,2 150,26" fill="#111827" stroke="#fff" stroke-width="2"/>'
+    hub = f'<circle cx="{cx}" cy="{cy}" r="16" fill="#fff" stroke="#111827" stroke-width="3"/>'
+    svg = (f'<svg viewBox="0 0 300 300" width="100%" style="max-width:320px;display:block;margin:0 auto" '
+           f'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ruota del proponente">'
+           f'{group}{"".join(parts)}</g>{hub}{pointer}</svg>')
+    result = ""
+    if winner:
+        result = (f'<div class="{cls}-esito" style="text-align:center;font-size:1.5rem;font-weight:700;margin-top:.6rem">'
+                  f'🎉 Tocca a {html_lib.escape(winner)}!'
+                  + (f'<div style="font-size:.95rem;font-weight:400;opacity:.75;margin-top:.3rem">{html_lib.escape(note)}</div>'
+                     if note else "") + '</div>')
+    return f"{style}<div>{svg}{result}</div>"
+
+
+def show_wheel(data, draw, animate: bool, note: str = ""):
+    nm = L.name_map(data)
+    cands = L.split_list(draw["candidati"])
+    names = [nm.get(c, "?") for c in cands]
+    idx = cands.index(draw["member_id"]) if draw["member_id"] in cands else 0
+    rot = L.wheel_rotation(len(cands), idx, draw["draw_id"])
+    st.markdown(wheel_svg(names, rot, anim_id=draw["draw_id"] if animate else None, winner=nm.get(draw["member_id"], "?"),
+                          note=note),
+                unsafe_allow_html=True)
+
+
+def do_draw(data, candidates: list[str], redo=None, motivo: str = ""):
+    """Estrae il proponente (decide il server, prima dell'animazione) e crea o aggiorna il periodo in bozza."""
+    winner = secrets_lib.SystemRandom().choice(candidates)
+    draw_id = new_id()
+    ts = now_ts()
+    if redo is not None:
+        pid = redo["period_id"]
+        if not save_append("estrazioni", {**redo[["draw_id", "period_id", "member_id", "candidati"]].to_dict(),
+                                          "stato": "annullata", "motivo": motivo, "ts": ts}):
+            return
+        # Le opzioni erano del proponente precedente: si azzerano.
+        if not update_period(data, pid, proponente_id=winner, opzioni=""):
+            return
+    else:
+        pid = new_id()
+        nums = L.periods(data)["numero_n"]
+        numero = int(nums.max()) + 1 if nums.notna().any() else 1
+        row = {"period_id": pid, "numero": str(numero), "proponente_id": winner, "data": date.today().isoformat(),
+               "stato": "bozza", "opzioni": "", "vincitore_id": "", "rivelato": ""}
+        if not save_table("periodi", pd.concat([data["periodi"], pd.DataFrame([row])], ignore_index=True)):
+            return
+    if save_append("estrazioni", {"draw_id": draw_id, "period_id": pid, "member_id": winner,
+                                  "candidati": L.join_list(candidates), "stato": "valida", "motivo": "", "ts": ts}):
+        st.session_state["ruota_anim"] = draw_id
+        st.rerun()
+
+
+def admin_wheel(data):
+    nm = L.name_map(data)
+    current = L.current_draw(data)
+    st.caption("Estrazione a sacchetto: chi ha già proposto resta fuori finché non hanno proposto tutti, "
+               "poi si ricomincia. Chi ha proposto per ultimo non può uscire subito di nuovo.")
+
+    if current is not None:
+        per = L.period_row(data, current["period_id"])
+        animate = st.session_state.pop("ruota_anim", None) == current["draw_id"]
+        note = f"Il periodo #{per['numero']} è in Bozza: aggiungi le sue proposte in Periodi."
+        # Durante il giro il risultato compare solo a ruota ferma, dentro l'animazione.
+        show_wheel(data, current, animate, note=note)
+        with st.expander("Rifai l'estrazione"):
+            motivo = st.radio("Perché?", list(L.MOTIVI_ANNULLO), horizontal=False, key="ruota_motivo",
+                              format_func={"errore": "Errore: rigira tra le stesse persone",
+                                           "passa": f"{nm.get(current['member_id'], '?')} passa il turno: rigira senza di lui/lei"}.get)
+            prev = L.split_list(current["candidati"])
+            cands, note = prev, ""
+            if motivo == "passa":
+                cands = [c for c in prev if c != current["member_id"]]
+                if not cands:
+                    cands, note = L.wheel_candidates(data, redo_period=current["period_id"], excluded=[current["member_id"]])
+            st.caption(f"Nella ruota: {', '.join(nm.get(c, '?') for c in cands) or 'nessuno'}. "
+                       + ("Chi passa il turno resta nel sacchetto per la prossima volta. " if motivo == "passa" else "")
+                       + "Le opzioni già inserite nella bozza vengono cancellate. " + note)
+            if st.session_state.pop("ruota_reset", False):
+                st.session_state["ruota_conferma"] = False
+            sure = st.checkbox("Confermo: annulla l'estrazione e rigira", key="ruota_conferma")
+            if st.button("🎡 Rigira", disabled=not sure or not cands, type="primary"):
+                st.session_state["ruota_reset"] = True
+                do_draw(data, cands, redo=current, motivo=motivo)
+        return
+
+    bozze = L.periods(data)
+    bozze = bozze[bozze["stato"] == "bozza"]
+    if not bozze.empty:
+        st.info(f"C'è già un periodo in Bozza (#{bozze.iloc[-1]['numero']}) creato a mano. "
+                "Aprine la votazione o eliminalo in *Periodi* prima di girare la ruota.")
+        return
+
+    bag, done = L.proposer_bag(data)
+    out = ms("Togli da questa estrazione (restano nel sacchetto)", bag, format_func=nm.get, key="ruota_fuori",
+             placeholder="Nessuno")
+    cands, note = L.wheel_candidates(data, excluded=out)
+    st.caption(f"Nella ruota ({len(cands)}): {', '.join(nm.get(c, '?') for c in cands) or 'nessuno'}."
+               + (f" Hanno già proposto in questo giro: {', '.join(nm.get(c, '?') for c in done)}." if done else "")
+               + (f" {note}" if note else ""))
+    if cands:
+        st.markdown(wheel_svg([nm.get(c, "?") for c in cands], 0), unsafe_allow_html=True)
+    if st.button("🎡 Gira la ruota", type="primary", disabled=not cands, width="stretch"):
+        do_draw(data, cands)
+
+
+def draws_history(data):
+    """Per tutti: chi è nel sacchetto e lo storico delle estrazioni, comprese quelle annullate."""
+    d = L.draws(data)
+    bag, done = L.proposer_bag(data)
+    current = L.current_draw(data)
+    if d.empty and not bag:
+        return
+    nm = L.name_map(data)
+    with st.expander("🎡 Ruota del proponente"):
+        if current is not None:
+            st.markdown(f"Prossimo a proporre: **{nm.get(current['member_id'], '?')}**")
+        if bag:
+            st.caption("Ancora nel sacchetto: " + ", ".join(nm.get(x, "?") for x in bag)
+                       + (". Hanno già proposto in questo giro: " + ", ".join(nm.get(x, "?") for x in done) if done else "") + ".")
+        if not d.empty:
+            num = dict(zip(data["periodi"]["period_id"], data["periodi"]["numero"]))
+            rows = pd.DataFrame({
+                "Data": d["ts_estrazione"].str[:10].map(fmt_date),
+                "Periodo": d["period_id"].map(lambda p: f"#{num[p]}" if p in num else "–"),
+                "Estratto": d["member_id"].map(nm),
+                "Esito": [("valida" if s == "valida" else L.MOTIVI_ANNULLO.get(m, "periodo eliminato"))
+                          for s, m in zip(d["stato"], d["motivo"])],
+                "Nella ruota": d["candidati"].map(lambda c: len(L.split_list(c))),
+            }).iloc[::-1]
+            st.dataframe(rows, hide_index=True)
 
 
 # ================================================================ guida
@@ -958,10 +1135,10 @@ def admin_gate(data):
 def admin_panel(data):
     if isinstance(get_store(), LocalStore):
         st.warning("Modalità locale: i dati sono salvati in file CSV su questo computer, non nel foglio Google.")
-    section = st.segmented_control("Gestione", ["Periodi", "Giochi", "Tag", "Membri", "Dati"], default="Periodi",
-                                   key="admin_section") or "Periodi"
-    {"Periodi": admin_periods, "Giochi": admin_games, "Tag": admin_tags, "Membri": admin_members,
-     "Dati": admin_data}[section](data)
+    section = st.segmented_control("Gestione", ["Periodi", "Ruota", "Giochi", "Tag", "Membri", "Dati"],
+                                   default="Periodi", key="admin_section") or "Periodi"
+    {"Periodi": admin_periods, "Ruota": admin_wheel, "Giochi": admin_games, "Tag": admin_tags,
+     "Membri": admin_members, "Dati": admin_data}[section](data)
 
 
 def update_period(data, period_id: str, **changes) -> bool:
@@ -1491,6 +1668,13 @@ def main():
 
     st.markdown("## 🎮 Level One")
     st.caption(f"Ciao {nm[me]}!")
+    # Contenitore sempre presente: se l'avviso comparisse o sparisse sopra le schede,
+    # Streamlit le ricreerebbe e riporterebbe tutti alla prima scheda.
+    banner = st.container()
+    nxt = L.current_draw(data)
+    if nxt is not None and not st.session_state.get("ruota_anim"):  # niente spoiler mentre la ruota gira
+        banner.info("🎡 La ruota ha deciso: " + ("**tocca a te** preparare le prossime proposte!" if nxt["member_id"] == me
+                                             else f"il prossimo a proporre è **{nm.get(nxt['member_id'], '?')}**."))
 
     # La scheda Proposte compare solo mentre c'è una votazione aperta.
     voting_open = (L.periods(data)["stato"] == "votazione").any()

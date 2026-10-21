@@ -30,6 +30,7 @@ SCHEMA: dict[str, list[str]] = {
     "voti_proposte": ["period_id", "member_id", "scelte", "ts"],
     "hype": ["period_id", "member_id", "voto", "ts"],
     "partecipazioni": ["period_id", "member_id", "partecipa", "da", "ts"],
+    "estrazioni": ["draw_id", "period_id", "member_id", "candidati", "stato", "motivo", "ts"],
     "valutazioni": [
         "period_id", "member_id", "game_id", "stato", "ore",
         "storia", "ambientazione", "gameplay", "audio", "longevita", "final",
@@ -37,7 +38,7 @@ SCHEMA: dict[str, list[str]] = {
     ],
 }
 
-APPEND_ONLY = {"pin", "voti_proposte", "hype", "valutazioni", "partecipazioni"}
+APPEND_ONLY = {"pin", "voti_proposte", "hype", "valutazioni", "partecipazioni", "estrazioni"}
 
 
 def new_id() -> str:

@@ -100,7 +100,14 @@ Per collegarla al foglio anche in locale, copia `secrets.toml.example` in `.stre
 
 Tutto si fa da **Admin → Periodi**.
 
-1. **Crea il periodo.** Da *Nuovo periodo* scegli il proponente, la data e fino a 5 giochi. Se un gioco non c'è ancora, aggiungilo prima da **Giochi**. Puoi partire in *Bozza*, se vuoi ricontrollare le opzioni, oppure aprire subito la votazione.
+0. **Gira la ruota** (Admin → Ruota). Estrae chi propone il prossimo periodo e crea da sola il periodo in *Bozza* con quel proponente; poi in *Periodi* aggiungi le sue 5 proposte. Le regole:
+   - è a sacchetto: chi ha già proposto resta fuori finché non hanno proposto tutti i membri attivi, poi si ricomincia. Chi ha proposto per ultimo non può uscire subito di nuovo. Il sacchetto si calcola dai periodi, compresi quelli creati a mano;
+   - prima di girare puoi togliere qualcuno *solo da questa estrazione* (per esempio chi sai già che non avrà tempo): resta nel sacchetto per la prossima volta;
+   - l'estratto lo decide l'app nel momento in cui premi il pulsante, e viene salvato subito; l'animazione si ferma su quel nome;
+   - finché il periodo è in Bozza puoi **rifare l'estrazione**, con conferma. *Errore*: rigira tra le stesse persone di prima. *Passa il turno*: rigira senza l'estratto, che resta nel sacchetto per la prossima volta. In entrambi i casi le opzioni già inserite nella bozza vengono cancellate, e nello Storico resta traccia dell'estrazione annullata con il motivo;
+   - dopo che apri la votazione l'estrazione è definitiva;
+   - se c'è già una bozza creata a mano, la ruota non gira: apri la votazione o elimina la bozza prima.
+1. **Oppure crea il periodo a mano.** Da *Nuovo periodo* scegli il proponente, la data e fino a 5 giochi. Se un gioco non c'è ancora, aggiungilo prima da **Giochi**. Puoi partire in *Bozza*, se vuoi ricontrollare le opzioni, oppure aprire subito la votazione.
 2. **Apri la votazione.** Dalla bozza premi *Apri votazione*. La scheda **Proposte** compare ai membri solo da questo momento e sparisce di nuovo quando chiudi la votazione.
 3. **Segui chi manca.** Nel riquadro del periodo vedi quanti hanno votato e i nomi di chi manca. Tu vedi anche i conteggi parziali, i membri no.
    - **Chi partecipa.** Nel riquadro del periodo, in *Bozza* o in *Votazione*, apri **Chi partecipa alla votazione** e scegli chi escludere (per esempio chi sai già che non ci sarà), poi premi *Salva*. Gli esclusi vedono le proposte ma non votano, e non contano né tra i votanti né tra chi manca. Lo stesso riquadro elenca chi si è escluso da solo dall'app: tu non puoi farlo rientrare, ma lui può farlo finché la votazione è aperta. Per riammettere qualcuno che hai escluso tu, toglilo dall'elenco e salva. L'esclusione vale solo per la votazione delle proposte: hype e valutazioni restano aperti a tutti.
@@ -167,7 +174,8 @@ Da **Admin → Membri** puoi:
 Ogni tab è una tabella.
 
 - Modificate solo dall'admin, tramite l'app: `membri`, `giochi`, `periodi`. In `giochi` generi e piattaforme sono separati da `;`. In `periodi` la colonna `rivelato` vale `1` quando i voti sono stati rivelati, ed è vuota quando sono nascosti.
-- Scritte dai membri: `pin`, `voti_proposte`, `hype`, `valutazioni`. In queste **ogni invio aggiunge una riga e conta l'ultima riga** di ciascun membro per ciascun periodo. Così due persone che votano nello stesso istante non si cancellano a vicenda.
+- `estrazioni`: le estrazioni della ruota (anche quelle annullate). Come le tabelle dei membri, ogni modifica aggiunge una riga e conta l'ultima.
+- Scritte dai membri: `pin`, `voti_proposte`, `hype`, `partecipazioni`, `valutazioni`. In queste **ogni invio aggiunge una riga e conta l'ultima riga** di ciascun membro per ciascun periodo. Così due persone che votano nello stesso istante non si cancellano a vicenda.
 
 Se devi correggere a mano nel foglio:
 
